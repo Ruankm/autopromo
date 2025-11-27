@@ -1,0 +1,149 @@
+version: '3.8'
+
+services:
+  # PostgreSQL - Banco de dados relacional
+  postgres:
+    image: postgres:16-alpine
+    container_name: autopromo-postgres
+    environment:
+      POSTGRES_USER: autopromo
+      POSTGRES_PASSWORD: autopromo_dev_pass
+      POSTGRES_DB: autopromo_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U autopromo" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - autopromo-network
+
+  # Redis - Cache e filas
+  redis:
+    image: redis:7-alpine
+    container_name: autopromo-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - autopromo-network
+
+  # Adminer - Interface web para PostgreSQL (opcional, dev only)
+  adminer:
+    image: adminer:latest
+    container_name: autopromo-adminer
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      - postgres
+    networks:
+      - autopromo-network
+    profiles:
+      - dev
+
+  # n8n - OPCIONAL (apenas para experimentação/laboratório)
+  # NÃO é dependência core. Para subir: docker compose --profile full up -d
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: autopromo-n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=autopromo123
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - autopromo-network
+    profiles:
+      - full
+
+  # Evolution API - WhatsApp Gateway
+  evolution-api:
+    image: atendai/evolution-api:v2.1.1
+    container_name: autopromo-evolution-api
+    restart: always
+    ports:
+      - "8081:8080" # Changed to 8081 to avoid conflict with Adminer
+    env_file:
+      - .env.evolution
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - autopromo-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  # Backend FastAPI (será criado na FASE 1)
+  # backend:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   container_name: autopromo-backend
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - DATABASE_URL=postgresql+asyncpg://autopromo:autopromo_dev_pass@postgres:5432/autopromo_db
+  #     - REDIS_URL=redis://redis:6379/0
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   networks:
+  #     - autopromo-network
+
+  # Frontend Next.js (será criado na FASE 5)
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: autopromo-frontend
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - NEXT_PUBLIC_API_URL=http://localhost:8000
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - autopromo-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  n8n_data:
+    driver: local
+  evolution_instances:
+    driver: local
+  evolution_store:
+    driver: local
+
+networks:
+  autopromo-network:
+    driver: bridge

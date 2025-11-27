@@ -1,0 +1,9 @@
+### Test Registration API
+POST http://localhost:8000/api/v1/users/register
+Content-Type: application/json
+
+{
+  "email": "test_manual@autopromo.com",
+  "password": "senha12345678",
+  "full_name": "Test Manual"
+}

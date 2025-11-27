@@ -1,0 +1,125 @@
+graph TB
+    subgraph "External Sources"
+        WA[WhatsApp Groups]
+        TG[Telegram Groups]
+        API[Affiliate APIs]
+    end
+
+    subgraph "Messaging Providers"
+        EVO[Evolution API<br/>WhatsApp Provider]
+        TGBOT[Telegram Bot API]
+    end
+
+    subgraph "AutoPromo Backend - FastAPI"
+        subgraph "API Layer"
+            REST_API[REST API<br/>User-facing endpoints]
+            WEBHOOK_API[Webhook API<br/>POST /webhook/whatsapp<br/>POST /webhook/telegram]
+        end
+        
+        INGEST_SVC[Ingestion Service<br/>Dedup + Normalize + Queue]
+        
+        subgraph "Redis - Hot Layer"
+            R_DEDUP[Dedup Cache<br/>ingestion_dedup:hash]
+            R_QUEUE_IN[Ingestion Queue<br/>queue:ingestion]
+            R_QUEUE_USER[User Dispatch Queues<br/>queue:dispatch:user:ID]
+            R_RATELIMIT[Rate Limit Cache<br/>last_sent:user:ID:group:ID]
+        end
+        
+        WORKER[Worker - The Brain<br/>Processor Loop]
+        DISPATCHER[Dispatcher - Traffic Controller<br/>Round-Robin Loop]
+        
+        subgraph "Provider Clients"
+            WA_CLIENT[WhatsApp Client<br/>Evolution API]
+            TG_CLIENT[Telegram Client<br/>Bot API]
+        end
+        
+        subgraph "PostgreSQL - Persistent Layer"
+            DB_USERS[users]
+            DB_TAGS[affiliate_tags]
+            DB_GROUPS_SRC[group_sources]
+            DB_GROUPS_DST[group_destinations]
+            DB_OFFERS[offers]
+            DB_PRICE[price_history]
+            DB_LOGS[send_logs]
+        end
+    end
+
+    subgraph "Frontend - Next.js"
+        UI[Dashboard UI]
+        AUTH[Login/Register]
+        CRUD_TAGS[Manage Tags]
+        CRUD_GROUPS[Manage Groups]
+        CONFIG[Settings]
+    end
+
+    %% External → Evolution/Telegram → Webhooks
+    WA -->|Messages| EVO
+    TG -->|Messages| TGBOT
+    EVO -->|Webhook POST| WEBHOOK_API
+    TGBOT -->|Webhook POST| WEBHOOK_API
+    API -->|Direct POST| WEBHOOK_API
+
+    %% Webhook → Ingestion Service
+    WEBHOOK_API -->|Process| INGEST_SVC
+    
+    %% Ingestion Flow
+    INGEST_SVC -->|1. Check Dedup| R_DEDUP
+    INGEST_SVC -->|2. Enqueue if New| R_QUEUE_IN
+    
+    %% Worker Processing
+    R_QUEUE_IN -->|BLPOP| WORKER
+    WORKER -->|Read Tags| DB_TAGS
+    WORKER -->|Check 24h Window| DB_LOGS
+    WORKER -->|Save Offer| DB_OFFERS
+    WORKER -->|Save Price| DB_PRICE
+    WORKER -->|Enqueue per User| R_QUEUE_USER
+
+    %% Dispatcher Flow
+    R_QUEUE_USER -->|LPOP Round-Robin| DISPATCHER
+    DISPATCHER -->|Check Config| DB_USERS
+    DISPATCHER -->|Check Groups| DB_GROUPS_DST
+    DISPATCHER -->|Check Rate Limit| R_RATELIMIT
+    DISPATCHER -->|Send via Client| WA_CLIENT
+    DISPATCHER -->|Send via Client| TG_CLIENT
+    DISPATCHER -->|Log Sent| DB_LOGS
+    DISPATCHER -->|Update Last Sent| R_RATELIMIT
+
+    %% Provider Clients → APIs
+    WA_CLIENT -->|HTTP POST| EVO
+    TG_CLIENT -->|HTTP POST| TGBOT
+
+    %% REST API ↔ Database
+    REST_API -->|Read/Write| DB_USERS
+    REST_API -->|Read/Write| DB_TAGS
+    REST_API -->|Read/Write| DB_GROUPS_SRC
+    REST_API -->|Read/Write| DB_GROUPS_DST
+    REST_API -->|Read| DB_OFFERS
+    REST_API -->|Read| DB_LOGS
+
+    %% Frontend ↔ Backend REST API
+    UI -->|HTTP| REST_API
+    AUTH -->|HTTP| REST_API
+    CRUD_TAGS -->|HTTP| REST_API
+    CRUD_GROUPS -->|HTTP| REST_API
+    CONFIG -->|HTTP| REST_API
+
+    %% Styling
+    classDef external fill:#e1f5ff,stroke:#0288d1,stroke-width:2px
+    classDef provider fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef api fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
+    classDef service fill:#a5d6a7,stroke:#2e7d32,stroke-width:2px
+    classDef worker fill:#81c784,stroke:#1b5e20,stroke-width:2px
+    classDef redis fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    classDef postgres fill:#d1c4e9,stroke:#5e35b1,stroke-width:2px
+    classDef frontend fill:#f8bbd0,stroke:#c2185b,stroke-width:2px
+    classDef client fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+
+    class WA,TG,API external
+    class EVO,TGBOT provider
+    class REST_API,WEBHOOK_API api
+    class INGEST_SVC service
+    class WORKER,DISPATCHER worker
+    class WA_CLIENT,TG_CLIENT client
+    class R_DEDUP,R_QUEUE_IN,R_QUEUE_USER,R_RATELIMIT redis
+    class DB_USERS,DB_TAGS,DB_GROUPS_SRC,DB_GROUPS_DST,DB_OFFERS,DB_PRICE,DB_LOGS postgres
+    class UI,AUTH,CRUD_TAGS,CRUD_GROUPS,CONFIG frontend

@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  evolution-api:
+    container_name: evolution_api
+    image: atendai/evolution-api:latest
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      # URL Base da API
+      SERVER_URL: http://localhost:8080
+
+      # API Key Global
+      AUTHENTICATION_API_KEY: autopromo_key_2024
+
+      # Configurações de Instância
+      INSTANCE_EXPIRATION_TIME: 0
+      DEL_INSTANCE: false
+
+      # Database (PostgreSQL)
+      DATABASE_ENABLED: true
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://autopromo:autopromo123@autopromo-postgres:5432/autopromo_db
+      DATABASE_CONNECTION_CLIENT_NAME: evolution_api
+
+      # QR Code
+      QRCODE_LIMIT: 30
+
+      # Logs
+      LOG_LEVEL: ERROR,WARN,DEBUG,INFO,LOG,VERBOSE,DARK,WEBHOOKS
+      LOG_COLOR: true
+
+      # Webhook Global (opcional)
+      WEBHOOK_GLOBAL_ENABLED: false
+
+      # Configurações de Conexão
+      CONFIG_SESSION_PHONE_CLIENT: AutoPromo
+      CONFIG_SESSION_PHONE_NAME: Chrome
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
+    networks:
+      - autopromo_network
+    depends_on:
+      - postgres
+
+  postgres:
+    container_name: autopromo-postgres
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: autopromo
+      POSTGRES_PASSWORD: autopromo123
+      POSTGRES_DB: autopromo_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - autopromo_network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U autopromo -d autopromo_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  evolution_instances:
+  evolution_store:
+  postgres_data:
+
+
+networks:
+  autopromo_network:
+    external: true

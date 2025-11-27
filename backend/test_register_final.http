@@ -1,0 +1,9 @@
+### Test Registration with bcrypt fix
+POST http://localhost:8000/api/v1/users/register
+Content-Type: application/json
+
+{
+  "email": "test_bcrypt_fix@autopromo.com",
+  "password": "senha12345678",
+  "full_name": "Test Bcrypt Fix"
+}

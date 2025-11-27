@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.next/
+out/
+.vercel
+.turbo/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.evolution
+
+# Docker
+docker-compose.override.yml
+evolution_instances/
+evolution_store/
+postgres_data/
+pgdata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Redis
+dump.rdb
+
+# Antigravity Brain (Keep local)
+.gemini/
+
+# Temporary Scripts & Docs
+test_evolution.py
+delete_old_instance.py
+SETUP_FINAL.md
+COMANDOS_CORRETOS.md
+SOLUCAO_TEMPORARIA.md
+SOLUCAO_ATUALIZADA.md
+TESTE_FINAL.md
+
+# SSL/Certificates
+*.pem
+*.key
+*.crt
+*.cert
+
+# Backup
+*.backup
+*.old
