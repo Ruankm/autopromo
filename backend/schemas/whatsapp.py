@@ -1,5 +1,12 @@
 """
 Schemas para WhatsApp Evolution API.
+
+⚠️  LEGACY SCHEMAS (Evolution API-based)
+    
+    NEW SCHEMAS: schemas/whatsapp_connection.py (Playwright-based)
+    
+    These schemas are for the old Evolution API integration.
+    DO NOT USE for new implementations.
 """
 from pydantic import BaseModel, Field
 from typing import Optional, List
