@@ -100,23 +100,64 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-  # Backend FastAPI (será criado na FASE 1)
-  # backend:
-  #   build:
-  #     context: ./backend
-  #     dockerfile: Dockerfile
-  #   container_name: autopromo-backend
-  #   ports:
-  #     - "8000:8000"
-  #   environment:
-  #     - DATABASE_URL=postgresql+asyncpg://autopromo:autopromo_dev_pass@postgres:5432/autopromo_db
-  #     - REDIS_URL=redis://redis:6379/0
-  #   depends_on:
-  #     - postgres
-  #     - redis
-  #   networks:
-  #     - autopromo-network
+  # Backend FastAPI - Rodando em Linux (Playwright)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: autopromo-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://autopromo:autopromo_dev_pass@postgres:5432/autopromo_db
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - ./backend/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - backend_sessions:/app/whatsapp_sessions
+      - backend_logs:/app/logs
+    networks:
+      - autopromo-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
+  # Worker WhatsApp + Playwright - Rodando em Linux
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: autopromo-worker
+    restart: unless-stopped
+    command: [ "python", "-m", "workers.whatsapp_worker" ]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://autopromo:autopromo_dev_pass@postgres:5432/autopromo_db
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - ./backend/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - backend_sessions:/app/whatsapp_sessions
+      - backend_logs:/app/logs
+    networks:
+      - autopromo-network
   # Frontend Next.js (será criado na FASE 5)
   # frontend:
   #   build:
@@ -142,6 +183,10 @@ volumes:
   evolution_instances:
     driver: local
   evolution_store:
+    driver: local
+  backend_sessions:
+    driver: local
+  backend_logs:
     driver: local
 
 networks:
