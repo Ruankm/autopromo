@@ -1,10 +1,12 @@
 """
 Mirror Service - Copia mensagens COM MÍDIA (imagens/vídeos) e monetização.
 
-⚠️  TODO (Fase 6): This service currently uses Evolution API references and will be
-    refactored to use services/whatsapp/playwright_gateway.py
+⚠️  LEGACY VERSION (Evolution API-based)
     
-    Current status: LEGACY CODE - functional but needs update
+    NEW VERSION: services/mirror_service_v2.py (Playwright-based)
+    
+    This old version will be deprecated after V2 is fully tested.
+    DO NOT USE for new implementations.
 
 Suporta:
 - Texto puro
