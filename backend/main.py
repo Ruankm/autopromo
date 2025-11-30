@@ -25,6 +25,7 @@ from api import (
     dashboard_router,
     whatsapp_router
 )
+from api.whatsapp_connections import router as whatsapp_connections_router
 
 
 @asynccontextmanager
@@ -49,11 +50,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="High-Frequency Trading SaaS for Affiliate Marketing",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
-# CORS middleware
+#CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -74,13 +75,16 @@ app.include_router(tags_router, prefix=settings.API_V1_PREFIX)
 app.include_router(dashboard_router, prefix=settings.API_V1_PREFIX)
 app.include_router(whatsapp_router, prefix=settings.API_V1_PREFIX)
 
+# NEW: WhatsApp Connections (Playwright-based)
+app.include_router(whatsapp_connections_router)
+
 
 @app.get("/")
 async def root():
     """Health check endpoint."""
     return {
         "message": "AutoPromo Cloud API",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "status": "running"
     }
 
