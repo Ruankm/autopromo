@@ -33,20 +33,64 @@ router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
 
 @router.post("/connect", response_model=QRCodeResponse)
-        # Criar instância
-        data = await client.create_instance(instance_name)
-        print(f"[DEBUG] Instance created: {data}")
-        
-        # Aguardar QR Code ser gerado (processamento assíncrono na Evolution API)
-        print(f"[DEBUG] Waiting for QR Code generation (3s)...")
-        await asyncio.sleep(3)
-        
-        # Buscar QR Code com retry
-        qr_code = None
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            print(f"[DEBUG] Fetching QR Code (attempt {attempt}/{max_attempts})...")
-            qr_code = await client.fetch_qrcode(instance_name)
+async def connect_whatsapp(
+    payload: WhatsAppInstanceCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Conecta WhatsApp via QR Code.
+    
+    DEPRECATED: Use /api/v1/connections instead (Playwright-based)
+    """
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="This endpoint is deprecated. Use /api/v1/connections instead"
+    )
+
+
+@router.get("/status", response_model=WhatsAppInstanceResponse)
+async def get_whatsapp_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna status da conexão.
+    
+    DEPRECATED: Use /api/v1/connections/{id}/status instead
+    """
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="This endpoint is deprecated. Use /api/v1/connections/{id}/status instead"
+    )
+
+
+@router.post("/discover-groups", response_model=List[GroupDiscoveryResponse])
+async def discover_groups(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Descobre grupos do WhatsApp.
+    
+    DEPRECATED: Groups are now auto-discovered in new Playwright implementation
+    """
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="This endpoint is deprecated"
+    )
+
+
+@router.delete("/disconnect")
+async def disconnect_whatsapp(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Desconecta WhatsApp.
+    
+    DEPRECATED: Use DELETE /api/v1/connections/{id} instead
+    """
             
             if qr_code:
                 print(f"[DEBUG] QR Code fetched successfully: {qr_code[:50]}...")
