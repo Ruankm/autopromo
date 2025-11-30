@@ -1,6 +1,11 @@
 """
 Dispatcher - "The Traffic Controller"
 
+⚠️  DEPRECATED: This file uses Evolution API and will be replaced by
+    workers/whatsapp_worker.py (Playwright-based) in Fase 4.
+    
+    DO NOT USE IN PRODUCTION.
+
 Este dispatcher gerencia o envio de ofertas para os grupos de destino,
 respeitando janelas de horário, rate limiting anti-ban, e registrando
 todos os envios em logs.
