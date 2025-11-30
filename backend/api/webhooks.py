@@ -13,6 +13,7 @@ from typing import Optional
 from datetime import datetime
 
 from services.ingestion_service import process_raw_message
+from services.mirror_service import process_incoming_whatsapp_message
 
 router = APIRouter(prefix="/webhook", tags=["Webhooks"])
 
@@ -113,56 +114,84 @@ async def whatsapp_webhook(
         return {"status": "ignored", "reason": "no_text"}
     
     # ========================================================================
-    # RESOLUÇÃO DE USER_ID
+    # NEW: MIRROR SERVICE - Escorrega → Autopromo
     # ========================================================================
-    user_id = x_user_id
+    # Tentar processar via mirror service (monetização + repost)
+    # Se não for grupo fonte, cai no fallback antigo (ingestion service)
     
-    if not user_id:
-        # Fallback: buscar em group_sources
-        from sqlalchemy import select
-        from core.database import AsyncSessionLocal
-        from models.group import GroupSource
-        
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(GroupSource).where(
-                    GroupSource.platform == "whatsapp",
-                    GroupSource.source_group_id == remote_jid,
-                    GroupSource.is_active == True
-                )
+    from sqlalchemy import select
+    from core.database import AsyncSessionLocal
+    from models.group import GroupSource
+    from models.user import User
+    from models.whatsapp_instance import WhatsAppInstance
+    
+    async with AsyncSessionLocal() as db:
+        # Resolver user via GroupSource
+        result = await db.execute(
+            select(GroupSource).where(
+                GroupSource.platform == "whatsapp",
+                GroupSource.source_group_id == remote_jid,
+                GroupSource.is_active == True
             )
-            group_source = result.scalar_one_or_none()
+        )
+        group_source = result.scalar_one_or_none()
+        
+        if group_source:
+            # É um grupo fonte! Processar via mirror service
+            user = await db.get(User, group_source.user_id)
             
-            if group_source:
-                user_id = str(group_source.user_id)
-            else:
-                # Não encontrou mapeamento
+            if user:
+                # Pegar nome da instância (assumir Worker01 por enquanto)
+                # TODO: Melhorar lookup de instance_name via whatsapp_instances
+                instance_name = payload.instance or "Worker01"
+                
                 import logging
-                logging.warning(
-                    f"WhatsApp webhook: No user_id mapping for group {remote_jid}. "
-                    f"Message ignored."
+                logging.info(
+                    f"🎯 Mirror Service: Processing message from {remote_jid} "
+                    f"for user {user.email}"
                 )
-                return {
-                    "status": "ignored",
-                    "reason": "no_user_mapping",
-                    "source_group_id": remote_jid
-                }
-    
-    # Extrair mídia (se houver)
-    media_urls = []
-    # TODO: Implementar extração de mídia quando necessário
-    
-    # Processar mensagem
-    result = await process_raw_message(
-        user_id=user_id,
-        source_platform="whatsapp",
-        source_group_id=remote_jid,
-        raw_text=raw_text,
-        media_urls=media_urls,
-        timestamp=datetime.fromtimestamp(data.get("messageTimestamp", 0))
-    )
-    
-    return result
+                
+                result = await process_incoming_whatsapp_message(
+                    db=db,
+                    user=user,
+                    source_group_jid=remote_jid,
+                    raw_text=raw_text,
+                    instance_name=instance_name,
+                    raw_payload=data
+                )
+                
+                return result
+        
+        # Fallback: usar lógica antiga de ingestão (se não for grupo fonte)
+        user_id = x_user_id
+        
+        if not user_id:
+            import logging
+            logging.warning(
+                f"WhatsApp webhook: No user_id mapping for group {remote_jid}. "
+                f"Message ignored."
+            )
+            return {
+                "status": "ignored",
+                "reason": "no_user_mapping",
+                "source_group_id": remote_jid
+            }
+        
+        # Extrair mídia (se houver)
+        media_urls = []
+        # TODO: Implementar extração de mídia quando necessário
+        
+        # Processar mensagem (antigo fluxo de ingestão)
+        result = await process_raw_message(
+            user_id=user_id,
+            source_platform="whatsapp",
+            source_group_id=remote_jid,
+            raw_text=raw_text,
+            media_urls=media_urls,
+            timestamp=datetime.fromtimestamp(data.get("messageTimestamp", 0))
+        )
+        
+        return result
 
 
 @router.post("/telegram")

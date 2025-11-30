@@ -7,6 +7,7 @@ from sqlalchemy import select
 from typing import List
 from datetime import datetime
 import httpx
+import asyncio
 
 from core.database import get_db
 from api.deps import get_current_user
@@ -48,19 +49,33 @@ async def connect_whatsapp(
         print(f"[DEBUG] Creating instance: {instance_name}")
         print(f"[DEBUG] API URL: {payload.api_url}")
         print(f"[DEBUG] API Key: {payload.api_key[:10]}...")
-        data = await client.create_instance(instance_name)
         
-        # Extrair QR Code
+        # Criar instância
+        data = await client.create_instance(instance_name)
+        print(f"[DEBUG] Instance created: {data}")
+        
+        # Aguardar QR Code ser gerado (processamento assíncrono na Evolution API)
+        print(f"[DEBUG] Waiting for QR Code generation (3s)...")
+        await asyncio.sleep(3)
+        
+        # Buscar QR Code com retry
         qr_code = None
-        if "qrcode" in data:
-            qr_obj = data["qrcode"]
-            if isinstance(qr_obj, dict):
-                qr_code = qr_obj.get("base64") or qr_obj.get("code")
-            elif isinstance(qr_obj, str):
-                qr_code = qr_obj
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            print(f"[DEBUG] Fetching QR Code (attempt {attempt}/{max_attempts})...")
+            qr_code = await client.fetch_qrcode(instance_name)
+            
+            if qr_code:
+                print(f"[DEBUG] QR Code fetched successfully: {qr_code[:50]}...")
+                break
+            
+            if attempt < max_attempts:
+                print(f"[DEBUG] QR Code not ready yet, waiting 2s...")
+                await asyncio.sleep(2)
         
         if not qr_code:
-            raise HTTPException(500, "QR Code não gerado")
+            print(f"[ERROR] QR Code not available after {max_attempts} attempts!")
+            raise HTTPException(500, "QR Code não gerado após múltiplas tentativas. Verifique se a Evolution API está funcionando corretamente.")
     except httpx.HTTPStatusError as e:
         print(f"[ERROR] HTTP Error creating instance: {e.response.status_code}")
         print(f"[ERROR] Response: {e.response.text}")

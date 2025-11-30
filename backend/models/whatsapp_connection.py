@@ -1,0 +1,65 @@
+"""
+WhatsApp Connection Model - Multi-número por usuário
+"""
+from sqlalchemy import Column, String, Integer, Boolean, ForeignKey, JSON, DateTime, Text, BigInteger
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from datetime import datetime
+import uuid
+
+from core.database import Base
+
+
+class WhatsAppConnection(Base):
+    """
+    Conexão WhatsApp - Cada usuário pode ter múltiplos números.
+    
+    Sessão é salva via persistent_context, NÃO no banco!
+    """
+    __tablename__ = "whatsapp_connections"
+    
+    # Primary Key
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    
+    # Identificação
+    phone_number = Column(String(20))  # +5511999999999
+    nickname = Column(String(100))      # "WhatsApp Trabalho", "WhatsApp Casa"
+    
+    # Status da conexão
+    status = Column(String(20), default="disconnected")
+    # Valores: disconnected, qr_needed, connected, error
+    
+    # Configuração dos grupos (salva NOMES, não JIDs)
+    source_groups = Column(JSON, default=list)
+    # Exemplo: [{"name": "Escorrega o Preço"}, {"name": "TechDeals BR"}]
+    
+    destination_groups = Column(JSON, default=list)
+    # Exemplo: [{"name": "Meu Grupo Casa"}, {"name": "Família"}]
+    
+    # Rate Limits
+    min_interval_per_group = Column(Integer, default=360)      # 6 minutos (segundos)
+    min_interval_global = Column(Integer, default=30)          # 30 segundos entre mensagens
+    max_messages_per_day = Column(Integer, default=1000)
+    
+    # Plano do usuário
+    plan_name = Column(String(50), default="trial")
+    max_source_groups = Column(Integer, default=5)
+    max_destination_groups = Column(Integer, default=10)
+    
+    # Saúde da conexão
+    last_activity_at = Column(DateTime)
+    last_error = Column(Text)
+    messages_sent_today = Column(Integer, default=0)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relacionamentos
+    user = relationship("User", back_populates="whatsapp_connections")
+    message_logs = relationship("MessageLog", back_populates="connection", cascade="all, delete-orphan")
+    offer_logs = relationship("OfferLog", back_populates="connection", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<WhatsAppConnection {self.nickname or self.phone_number} ({self.status})>"

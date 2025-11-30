@@ -38,5 +38,8 @@ class User(Base):
     offers = relationship("Offer", back_populates="user", cascade="all, delete-orphan")
     send_logs = relationship("SendLog", back_populates="user", cascade="all, delete-orphan")
     
+    # WhatsApp Web Automation (Multi-número)
+    whatsapp_connections = relationship("WhatsAppConnection", back_populates="user", cascade="all, delete-orphan")
+    
     def __repr__(self):
         return f"<User(id={self.id}, email={self.email})>"

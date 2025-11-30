@@ -1,7 +1,17 @@
 """
-AutoPromo Cloud - Backend FastAPI
-Main application entry point.
+AutoPromo Backend API - Main Application.
 """
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# CRITICAL: Load .env BEFORE any other imports
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
+print(f"[STARTUP] Loading .env from: {env_path}")
+print(f"[STARTUP] .env exists: {env_path.exists()}")
+print(f"[STARTUP] EVOLUTION_API_TOKEN: {'LOADED' if os.getenv('EVOLUTION_API_TOKEN') else 'EMPTY!'}")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager

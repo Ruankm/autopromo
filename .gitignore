@@ -57,6 +57,10 @@ evolution_store/
 postgres_data/
 pgdata/
 
+# WhatsApp Sessions (SENSITIVE - Do NOT commit!)
+whatsapp_sessions/
+*.session
+
 # OS
 .DS_Store
 Thumbs.db
