@@ -1,9 +1,9 @@
 @echo off
-REM AutoPromo - Start Backend Server
-REM Run this to start the FastAPI backend
+REM AutoPromo - Start WhatsApp Worker
+REM Run this to start the Playwright worker
 
 echo ======================================
-echo AutoPromo Backend - Starting Server
+echo AutoPromo Worker - Starting
 echo ======================================
 echo.
 
@@ -23,11 +23,11 @@ echo [2/3] Checking environment...
 python --version
 echo.
 
-echo [3/3] Starting FastAPI server...
-echo Server will be available at: http://localhost:8000
-echo API docs at: http://localhost:8000/docs
+echo [3/3] Starting WhatsApp Worker...
+echo Worker will monitor connections and process messages
+echo Press Ctrl+C to stop gracefully
 echo.
 
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m workers.whatsapp_worker
 
 pause
