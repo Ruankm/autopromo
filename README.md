@@ -1,155 +1,147 @@
-# 🚀 AutoPromo Cloud
+# AutoPromo - WhatsApp Mirroring & Monetization SaaS
 
-**High-Frequency Trading (HFT) SaaS para Marketing de Afiliados**
+Sistema de automação WhatsApp para espelhamento de mensagens com monetização automática de links de afiliados.
 
-AutoPromo Cloud é uma plataforma SaaS que automatiza a ingestão, processamento e redistribuição de ofertas de afiliados em alta frequência, respeitando limites de taxa para evitar banimentos (Anti-Spam Compliance).
+## 🚀 Status do Projeto
 
-## 📋 Visão Geral
+**MVP em Desenvolvimento** | **31% Completo**
 
-O sistema ingere milhares de ofertas por minuto de múltiplas fontes (WhatsApp, Telegram, APIs), deduplica, filtra, troca links para monetização com suas tags de afiliado, e redistribui para seus canais proprietários de forma controlada.
+### ✅ Completado
 
-### Principais Funcionalidades
+- **Fase 1: Setup & Infrastructure**
+  - Playwright 1.56.0 + Chromium
+  - Estrutura de diretórios
+  - Segurança (whatsapp_sessions/)
+  
+- **Fase 2: Models & Database**
+  - WhatsAppConnection (multi-número)
+  - MessageLog (deduplicação connection-scoped)
+  - OfferLog (analytics)
+  - Migration Alembic aplicada
 
-- ⚡ **Ingestão de Alta Performance**: < 100ms de latência
-- 🔄 **Deduplicação Inteligente**: Cache Redis com SHA-256
-- 💰 **Monetização Automática**: Troca de links para tags de afiliado (Amazon, Magalu, Mercado Livre)
-- 🎯 **Multi-tenant SaaS**: Isolamento completo entre usuários
-- 🛡️ **Anti-Ban Compliance**: Rate limiting e janelas de horário configuráveis
-- 📊 **Analytics**: Histórico de preços e métricas de envio
+- **Fase 3: Core Services** (parcial)
+  - WhatsAppGateway (interface Protocol)
+  - ConnectionPool (persistent contexts + recovery)
+  - QueueManager (rate limit duplo)
+  - HumanizedSender (typing simulation)
+
+### 🔄 Em Progresso
+
+- MessageMonitor (deduplicação DB + cache)
+- PlaywrightGateway (implementação completa)
+
+### 📋 Próximas Fases
+
+- Fase 4: Worker (loop principal)
+- Fase 5: API Endpoints
+- Fase 6: Mirror Integration
+- Fase 7: Testing
+- Fase 8: Deploy & Launch
 
 ## 🏗️ Arquitetura
 
 ```
-Fontes Externas → n8n Gateway → FastAPI Backend → Redis/PostgreSQL → Dispatcher → n8n → Messaging APIs
+backend/
+├── models/
+│   ├── whatsapp_connection.py  # Multi-número por usuário
+│   ├── message_log.py           # Deduplicação
+│   └── offer_log.py             # Analytics
+├── services/
+│   └── whatsapp/
+│       ├── gateway.py           # Interface abstrata
+│       ├── connection_pool.py   # Gerencia contexts Playwright
+│       ├── queue_manager.py     # Rate limit duplo
+│       └── humanized_sender.py  # Envio simulando humano
+└── workers/
+    └── whatsapp_worker.py       # (próximo)
 ```
 
-**Componentes**:
-- **Backend**: FastAPI (Python 3.12+)
-- **Database**: PostgreSQL 16 + Redis 7
-- **Frontend**: Next.js 15 + Tailwind CSS + Shadcn/UI
-- **Gateway**: n8n (webhooks e automação)
-- **Infra**: Docker Compose
+## 🔑 Features Principais
 
-Veja o diagrama completo em [`docs/architecture.mermaid`](./docs/architecture.mermaid).
+### Multi-Número
+- Cada usuário pode conectar múltiplos números WhatsApp
+- Sessões persistentes (QR Code apenas 1x)
+- Isolamento completo por conexão
 
-## 🚀 Quick Start
+### Deduplicação Inteligente
+- Connection-scoped (sem conflitos entre clientes)
+- Cache em memória + DB como verdade
+- Tripla verificação (message_id + timestamp + hash)
 
-### Pré-requisitos
+### Rate Limiting Duplo
+- **Por grupo:** 6-10 minutos entre mensagens
+- **Global:** 30 segundos entre qualquer mensagem da conexão
+- Evita comportamento robótico
 
-- Docker e Docker Compose instalados
-- Python 3.12+ (para desenvolvimento local)
-- Node.js 20+ (para frontend)
+### Envio Humanizado
+- Typing char-by-char (0.03-0.12s por caractere)
+- Aguarda preview carregar (2-4s)
+- Delays aleatórios
+- **Preview de links GARANTIDO**
 
-### 1. Subir a Infraestrutura Base
+## 🛠️ Stack Tecnológica
+
+- **Backend:** FastAPI + SQLAlchemy
+- **Database:** PostgreSQL
+- **Cache:** Redis
+- **Automação:** Playwright (persistent contexts)
+- **Queue:** Redis pub/sub
+
+## 📦 Instalação
 
 ```bash
-# Subir apenas PostgreSQL, Redis e Adminer (dev)
-docker-compose --profile dev up -d
+# Clone
+git clone https://github.com/Ruankm/autopromo.git
+cd autopromo
 
-# OU subir com n8n incluído (full stack)
-docker-compose --profile full up -d
-```
-
-**Serviços disponíveis**:
-- PostgreSQL: `localhost:5432`
-- Redis: `localhost:6379`
-- Adminer (DB UI): `http://localhost:8080`
-- n8n (se profile full): `http://localhost:5678` (user: `admin`, pass: `autopromo123`)
-
-### 2. Verificar Status
-
-```bash
-docker-compose ps
-```
-
-### 3. Acessar Adminer (PostgreSQL UI)
-
-Acesse `http://localhost:8080`:
-- **Sistema**: PostgreSQL
-- **Servidor**: postgres
-- **Usuário**: autopromo
-- **Senha**: autopromo_dev_pass
-- **Base de dados**: autopromo_db
-
-## 📁 Estrutura do Projeto
-
-```
-autopromo/
-├── backend/          # FastAPI application (FASE 1+)
-│   ├── api/          # Endpoints REST
-│   ├── services/     # Lógica de negócio
-│   ├── repositories/ # Camada de dados
-│   ├── workers/      # Worker & Dispatcher
-│   ├── schemas/      # Pydantic models
-│   └── core/         # Config, database, redis
-├── frontend/         # Next.js application (FASE 5+)
-├── infra/            # Scripts de infraestrutura
-├── docs/             # Documentação técnica
-│   ├── specs.md              # Especificação completa
-│   ├── architecture.mermaid  # Diagrama de arquitetura
-│   ├── api_contract.md       # Contratos de API
-│   └── todo.md               # Checklist de implementação
-├── docker-compose.yml
-└── README.md
-```
-
-## 📖 Documentação
-
-- **[Especificação Técnica](./docs/specs.md)**: Visão completa do sistema, princípios e stack
-- **[Arquitetura](./docs/architecture.mermaid)**: Diagrama de fluxo de dados
-- **[API Contract](./docs/api_contract.md)**: Endpoints, schemas e Redis keys
-- **[Todo](./docs/todo.md)**: Checklist de implementação por fase
-
-## 🔄 Fases de Implementação
-
-- **FASE 0**: ✅ Setup & Artifacts (VOCÊ ESTÁ AQUI)
-- **FASE 1**: 🔨 Fundação do Backend
-- **FASE 2**: 📥 Ingestão & Deduplicação
-- **FASE 3**: 🧠 Processador & Workers
-- **FASE 4**: 🚦 Dispatcher & SaaS Rules
-- **FASE 5**: 💻 Frontend MVP
-- **FASE 6**: 🧪 Testes & Hardening
-
-## 🛠️ Desenvolvimento
-
-### Backend (FASE 1+)
-
-```bash
+# Install dependencies
 cd backend
-uv venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-uv pip install -r requirements.txt
-uvicorn main:app --reload
+pip install -r requirements.txt
+
+# Install Playwright browsers
+playwright install chromium
+
+# Run migrations
+alembic upgrade head
 ```
 
-### Frontend (FASE 5+)
+## 🧪 Tests
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# Test Playwright
+python scripts/test_playwright.py
+
+# Test ConnectionPool
+python scripts/test_connection_pool.py
 ```
 
-## 🔐 Segurança Multi-Tenant
+## 📊 Roadmap
 
-> [!CAUTION]
-> **Princípio Crítico**: Todo código DEVE garantir isolamento entre usuários. Toda query ao Postgres e toda chave Redis relacionada a negócio DEVE incluir `user_id`.
+- [x] Setup Playwright
+- [x] Database models
+- [x] Core services (gateway, pool, queue, sender)
+- [ ] Message monitor
+- [ ] Worker implementation
+- [ ] API endpoints
+- [ ] Testing suite
+- [ ] Production deployment
 
-## 📝 Princípios do MVP
+## 🔒 Security
 
-- **Zero Criatividade**: Não inventar ofertas
-- **Zero Alucinação**: Não adivinhar preços ou dados
-- **Performance Total**: Latência < 100ms no endpoint de ingestão
+- Sessões WhatsApp não commitadas (`.gitignore`)
+- Connection-scoped deduplication
+- Encrypted sessions (planejado)
+- chmod 700 em whatsapp_sessions/
 
-## 🤝 Contribuindo
+## 📝 License
 
-Este projeto está em desenvolvimento ativo. Siga o checklist em [`docs/todo.md`](./docs/todo.md).
+MIT
 
-## 📄 Licença
+## 👤 Author
 
-Proprietary - AutoPromo Cloud © 2025
+Ruan K. Moreira
 
 ---
 
-**Status Atual**: FASE 0 Completo ✅  
-**Próximo Passo**: FASE 1 - Fundação do Backend
+**Última atualização:** 2025-11-30
+**Progresso:** Fase 3 de 8 (31%)
