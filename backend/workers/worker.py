@@ -1,6 +1,12 @@
 """
 Worker de Processamento - "The Brain"
 
+⚠️  LEGACY WORKER - This is the OLD processing worker (pre-WhatsApp Web).
+    
+    REPLACED BY: workers/whatsapp_worker.py (Playwright-based)
+    
+    DO NOT USE IN PRODUCTION - kept for reference only.
+
 Este worker processa ofertas da queue:ingestion, aplica transformações,
 monetiza URLs e enfileira para dispatch.
 
