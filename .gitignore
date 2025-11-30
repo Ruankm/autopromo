@@ -60,6 +60,8 @@ pgdata/
 # WhatsApp Sessions (SENSITIVE - Do NOT commit!)
 whatsapp_sessions/
 *.session
+test_session/
+test_sessions/
 
 # OS
 .DS_Store
