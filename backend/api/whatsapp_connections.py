@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 import uuid
 
 from core.database import get_db
-from core.auth import get_current_user
+from api.deps import get_current_user
 from models.user import User
 from models.whatsapp_connection import WhatsAppConnection
 from models.offer_log import OfferLog
