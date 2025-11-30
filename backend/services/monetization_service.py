@@ -252,3 +252,55 @@ async def monetize_url(
         "monetized_url": original_url,
         "store_slug": store_slug
     }
+
+
+# ============================================================================
+# TEXT MONETIZATION (for worker usage)
+# ============================================================================
+
+async def monetize_text(
+    db: AsyncSession,
+    text: str,
+    user_id: str
+) -> str:
+    """
+    Monetize all URLs found in text.
+    
+    Wrapper for worker/mirror usage.
+    Finds URLs, detects stores, monetizes, and replaces in text.
+    
+    Args:
+        db: Database session
+        text: Original text with URLs
+        user_id: User UUID
+        
+    Returns:
+        Text with monetized URLs
+    """
+    from services.ingestion_service import extract_urls, detect_store
+    
+    # Extract URLs
+    urls = extract_urls(text)
+    
+    if not urls:
+        return text
+    
+    monetized_text = text
+    
+    # Monetize each URL
+    for url in urls:
+        store_slug = detect_store(url)
+        
+        result = await monetize_url(
+            db=db,
+            user_id=user_id,
+            store_slug=store_slug,
+            original_url=url
+        )
+        
+        monetized_url = result.get("monetized_url", url)
+        
+        # Replace in text
+        monetized_text = monetized_text.replace(url, monetized_url)
+    
+    return monetized_text

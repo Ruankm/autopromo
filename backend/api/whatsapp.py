@@ -1,5 +1,12 @@
 """
 API endpoints para WhatsApp (Evolution API).
+
+⚠️  LEGACY API - Evolution-based endpoints
+    
+    These endpoints are for old Evolution API integration.
+    NEW API: api/whatsapp_connections.py (Playwright-based)
+    
+    Temporarily disabled to allow startup.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +21,7 @@ from api.deps import get_current_user
 from models.user import User
 from models.whatsapp_instance import WhatsAppInstance
 from models.group import GroupSource
-from services.providers.whatsapp_evolution import EvolutionAPIClient
+# from services.providers.whatsapp_evolution import EvolutionAPIClient  # DISABLED - module removed
 from schemas.whatsapp import (
     WhatsAppInstanceCreate,
     WhatsAppInstanceResponse,
@@ -26,30 +33,6 @@ router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
 
 @router.post("/connect", response_model=QRCodeResponse)
-async def connect_whatsapp(
-    payload: WhatsAppInstanceCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Conecta WhatsApp via QR Code."""
-    # Verificar se já conectado
-    result = await db.execute(
-        select(WhatsAppInstance).where(WhatsAppInstance.user_id == current_user.id)
-    )
-    existing = result.scalar_one_or_none()
-    
-    if existing and existing.status == "connected":
-        raise HTTPException(400, "WhatsApp já conectado")
-    
-    # Criar instância
-    instance_name = f"user_{current_user.id}_whatsapp"
-    client = EvolutionAPIClient(payload.api_url, payload.api_key)
-    
-    try:
-        print(f"[DEBUG] Creating instance: {instance_name}")
-        print(f"[DEBUG] API URL: {payload.api_url}")
-        print(f"[DEBUG] API Key: {payload.api_key[:10]}...")
-        
         # Criar instância
         data = await client.create_instance(instance_name)
         print(f"[DEBUG] Instance created: {data}")
