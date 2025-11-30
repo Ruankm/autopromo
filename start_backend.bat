@@ -20,7 +20,7 @@ if exist "venv\Scripts\activate.bat" (
 
 echo.
 echo [2/3] Checking environment...
-python --version
+py -3.12 --version
 echo.
 
 echo [3/3] Starting FastAPI server...
@@ -28,6 +28,6 @@ echo Server will be available at: http://localhost:8000
 echo API docs at: http://localhost:8000/docs
 echo.
 
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+py -3.12 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 pause

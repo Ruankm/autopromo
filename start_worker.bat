@@ -20,7 +20,7 @@ if exist "venv\Scripts\activate.bat" (
 
 echo.
 echo [2/3] Checking environment...
-python --version
+py -3.12 --version
 echo.
 
 echo [3/3] Starting WhatsApp Worker...
@@ -28,6 +28,6 @@ echo Worker will monitor connections and process messages
 echo Press Ctrl+C to stop gracefully
 echo.
 
-python -m workers.whatsapp_worker
+py -3.12 -m workers.whatsapp_worker
 
 pause
