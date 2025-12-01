@@ -156,6 +156,8 @@ class WhatsAppWorker:
                         await self.handle_new_connection(data)
                     elif cmd_type == "REGENERATE_QR":
                         await self.handle_regenerate_qr(data)
+                    elif cmd_type == "DISCOVER_GROUPS":
+                        await self.handle_discover_groups(data)
                     else:
                         logger.warning(f"Unknown command type: {cmd_type}")
                 
@@ -214,18 +216,6 @@ class WhatsAppWorker:
                     # Reset status to trigger new QR generation
                     conn.status = "qr_needed"
                     conn.qr_code_base64 = None
-                    conn.qr_generated_at = None
-                    await db.commit()
-                    
-                    logger.info(f"✓ Page reloaded for {conn_id}")
-            
-            except Exception as e:
-                logger.error(f"Error regenerating QR for {conn_id}: {e}")
-    
-    # ========================================================================
-    # LOGIN CYCLE - QR DETECTION & LOGIN MONITORING
-    # ========================================================================
-    
     async def login_cycle(self):
         """
         Monitor connections awaiting login.
