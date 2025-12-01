@@ -17,7 +17,7 @@ from schemas.whatsapp_group import (
     WhatsAppGroupUpdate,
     WhatsAppGroupBulkUpdate
 )
-from api.users import get_current_user
+from api.deps import get_current_user
 
 router = APIRouter(prefix="/api/v1/connections", tags=["whatsapp_groups"])
 
