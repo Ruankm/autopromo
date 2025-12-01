@@ -532,40 +532,6 @@ class WhatsAppWorker:
     # ========================================================================
     # MAIN LOOP
     # ========================================================================
-    
-    async def main_loop(self):
-        """
-        Main worker loop.
-        
-        Runs THREE concurrent cycles:
-        1. login_cycle() - Process pending/qr_needed/connecting
-        2. monitor_cycle() - Monitor messages (connected only)
-        3. send_cycle() - Send queued messages (connected only)
-        """
-        logger.info("Starting main loop...")
-        
-        try:
-            while self.running:
-                # Run all three cycles concurrently
-                await asyncio.gather(
-                    self.login_cycle(),     # NEW!
-                    self.monitor_cycle(),   # connected only
-                    self.send_cycle(),      # connected only
-                    return_exceptions=True
-                )
-                
-                # Small delay
-                await asyncio.sleep(1)
-        
-        except Exception as e:
-            logger.error(f"Main loop error: {e}", exc_info=True)
-        
-        finally:
-            logger.info("Main loop stopped")
-    
-    async def cleanup_cycle(self):
-        """
-        Periodic cleanup task.
         
         Runs every hour to clear old queued messages.
         """
