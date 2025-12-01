@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
     full_name VARCHAR(255),
-    hashed_password VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
     config_json JSONB DEFAULT '{"window_start": "08:00", "window_end": "22:00", "min_delay_seconds": 300, "max_messages_per_day": 100}'::jsonb,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT NOW(),
