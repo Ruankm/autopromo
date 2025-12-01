@@ -26,6 +26,7 @@ from api import (
     whatsapp_router
 )
 from api.whatsapp_connections import router as whatsapp_connections_router
+from api.whatsapp_groups import router as whatsapp_groups_router
 
 
 @asynccontextmanager
@@ -77,6 +78,9 @@ app.include_router(whatsapp_router, prefix=settings.API_V1_PREFIX)
 
 # NEW: WhatsApp Connections (Playwright-based)
 app.include_router(whatsapp_connections_router)
+
+# NEW: WhatsApp Groups (DOM-based discovery)
+app.include_router(whatsapp_groups_router)
 
 
 @app.get("/")
