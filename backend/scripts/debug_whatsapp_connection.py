@@ -21,7 +21,11 @@ Perfeito para validar:
 """
 import asyncio
 import sys
+from pathlib import Path
 from uuid import UUID
+
+# Adicionar diretório pai ao path para imports funcionarem
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import select
 
