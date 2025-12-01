@@ -1,12 +1,15 @@
 """
 WhatsApp Worker - Main worker loop for Playwright automation.
 
+NEW ARCHITECTURE: Worker is sole owner of Playwright!
+Backend delegates via Redis Pub/Sub.
+
 Responsibilities:
-- Initialize PlaywrightGateway
-- Monitor source groups for new messages
+- Process NEW_CONNECTION events (initialize Playwright, generate QR)
+- login_cycle(): detect QR scan and login completion
+- Monitor source groups for new messages (status='connected' only)
 - Queue messages for sending
 - Process send queue with rate limiting
-- Listen for Redis commands (pause, resume, etc)
 - Graceful shutdown
 
 Architecture:
@@ -19,7 +22,10 @@ import asyncio
 import logging
 import signal
 import sys
-from typing import Dict, Set
+import json
+import base64
+from typing import Dict, Set, Optional
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -38,6 +44,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# QR Code selectors (fallbacks for different WhatsApp versions)
+QR_SELECTORS = [
+    'canvas[aria-label*="Scan me"]',
+    'canvas[aria-label*="QR code"]',
+    'div[data-ref] canvas',
+    'canvas[aria-label*="escanear"]',  # Portuguese
+]
+
+
 class WhatsAppWorker:
     """
     Main WhatsApp worker managing all connections and message processing.
@@ -51,6 +66,7 @@ class WhatsAppWorker:
         self.queue_manager = QueueManager()
         self.running = False
         self.active_connections: Set[str] = set()
+        self.redis_subscriber = None
         
         # State
         self.monitor_interval = 30  # seconds between monitoring cycles
@@ -75,6 +91,11 @@ class WhatsAppWorker:
             await self.gateway.start()
         logger.info("✓ Playwright gateway started")
         
+        # Subscribe to Redis commands (using .client property!)
+        self.redis_subscriber = redis_client.client.pubsub()
+        await self.redis_subscriber.subscribe("whatsapp:commands")
+        logger.info("✓ Redis subscriber ready")
+        
         self.running = True
         logger.info("=== Worker Ready ===")
     
@@ -83,6 +104,14 @@ class WhatsAppWorker:
         logger.info("=== Stopping WhatsApp Worker ===")
         
         self.running = False
+        
+        # Unsubscribe from Redis
+        if self.redis_subscriber:
+            try:
+                await self.redis_subscriber.unsubscribe("whatsapp:commands")
+                await self.redis_subscriber.close()
+            except Exception as e:
+                logger.error(f"Error closing Redis subscriber: {e}")
         
         # Shutdown Playwright
         if self.gateway:
@@ -95,12 +124,258 @@ class WhatsAppWorker:
         
         logger.info("=== Worker Stopped ===")
     
+    # ========================================================================
+    # REDIS COMMAND LISTENER
+    # ========================================================================
+    
+    async def redis_command_listener(self):
+        """
+        Listen for Redis commands from Backend.
+        
+        Commands:
+        - NEW_CONNECTION: Initialize new connection
+        - REGENERATE_QR: Reload page to generate new QR
+        """
+        try:
+            logger.info("Redis command listener started")
+            
+            async for message in self.redis_subscriber.listen():
+                if not self.running:
+                    break
+                
+                if message["type"] != "message":
+                    continue
+                
+                try:
+                    data = json.loads(message["data"])
+                    cmd_type = data.get("type")
+                    
+                    logger.info(f"Received command: {cmd_type}")
+                    
+                    if cmd_type == "NEW_CONNECTION":
+                        await self.handle_new_connection(data)
+                    elif cmd_type == "REGENERATE_QR":
+                        await self.handle_regenerate_qr(data)
+                    else:
+                        logger.warning(f"Unknown command type: {cmd_type}")
+                
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON in Redis message: {e}")
+                except Exception as e:
+                    logger.error(f"Error processing Redis command: {e}", exc_info=True)
+        
+        except asyncio.CancelledError:
+            logger.info("Redis listener cancelled")
+        except Exception as e:
+            logger.error(f"Redis listener error: {e}", exc_info=True)
+    
+    async def handle_new_connection(self, data: dict):
+        """
+        Handle NEW_CONNECTION command.
+        
+        Backend created a connection with status='pending'.
+        We just log it - login_cycle() will process it.
+        """
+        conn_id = data.get("connection_id")
+        nickname = data.get("nickname", "Unknown")
+        
+        logger.info(f"📝 NEW_CONNECTION: {nickname} ({conn_id})")
+        logger.info(f"login_cycle() will process this connection")
+    
+    async def handle_regenerate_qr(self, data: dict):
+        """
+        Handle REGENERATE_QR command.
+        
+        QR expired, reload page to generate new one.
+        """
+        conn_id = data.get("connection_id")
+        
+        logger.info(f"🔄 REGENERATE_QR: {conn_id}")
+        
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(WhatsAppConnection).where(
+                    WhatsAppConnection.id == conn_id
+                )
+            )
+            conn = result.scalar_one_or_none()
+            
+            if not conn:
+                logger.warning(f"Connection {conn_id} not found")
+                return
+            
+            try:
+                # Get context
+                context = await self.gateway.pool.get_or_create(conn_id)
+                if context.pages:
+                    page = context.pages[0]
+                    await page.reload()
+                    
+                    # Reset status to trigger new QR generation
+                    conn.status = "qr_needed"
+                    conn.qr_code_base64 = None
+                    conn.qr_generated_at = None
+                    await db.commit()
+                    
+                    logger.info(f"✓ Page reloaded for {conn_id}")
+            
+            except Exception as e:
+                logger.error(f"Error regenerating QR for {conn_id}: {e}")
+    
+    # ========================================================================
+    # LOGIN CYCLE - QR DETECTION & LOGIN MONITORING
+    # ========================================================================
+    
+    async def login_cycle(self):
+        """
+        Monitor connections awaiting login.
+        
+        Processes connections with status:
+        - pending: Open WhatsApp Web
+        - qr_needed: Generate and save QR Code
+        - connecting: Wait for login completion
+        
+        Once connected, monitor_cycle() takes over.
+        """
+        async with AsyncSessionLocal() as db:
+            # Get connections awaiting login
+            result = await db.execute(
+                select(WhatsAppConnection).where(
+                    WhatsAppConnection.status.in_(["pending", "qr_needed", "connecting"])
+                )
+            )
+            connections = result.scalars().all()
+            
+            if not connections:
+                return
+            
+            for conn in connections:
+                try:
+                    conn_id = str(conn.id)
+                    
+                    # Get or create persistent context
+                    context = await self.gateway.pool.get_or_create(conn_id)
+                    
+                    # Ensure we have a page
+                    if not context.pages:
+                        page = await context.new_page()
+                    else:
+                        page = context.pages[0]
+                    
+                    # === PENDING: Open WhatsApp Web ===
+                    if conn.status == "pending":
+                        logger.info(f"📱 Opening WhatsApp Web for {conn.nickname}")
+                        await page.goto(
+                            "https://web.whatsapp.com",
+                            wait_until="networkidle",
+                            timeout=60000
+                        )
+                        
+                        conn.status = "qr_needed"
+                        await db.commit()
+                        logger.info(f"✓ WhatsApp Web opened for {conn.nickname}")
+                        continue
+                    
+                    # === QR_NEEDED: Generate and save QR ===
+                    if conn.status == "qr_needed":
+                        # Check if QR needs update (first gen or >50s old)
+                        should_update_qr = (
+                            not conn.qr_generated_at or
+                            (datetime.utcnow() - conn.qr_generated_at).total_seconds() > 50
+                        )
+                        
+                        if should_update_qr:
+                            qr_element = await self._get_qr_element(page)
+                            
+                            if qr_element:
+                                try:
+                                    # Screenshot QR code
+                                    qr_bytes = await qr_element.screenshot()
+                                    qr_base64 = base64.b64encode(qr_bytes).decode()
+                                    
+                                    # Save to database
+                                    conn.qr_code_base64 = qr_base64
+                                    conn.qr_generated_at = datetime.utcnow()
+                                    await db.commit()
+                                    
+                                    logger.info(f"✓ QR code generated for {conn.nickname}")
+                                
+                                except Exception as e:
+                                    logger.error(f"Error capturing QR for {conn_id}: {e}")
+                        
+                        # Check if user scanned QR
+                        if await self._is_logged_in(page):
+                            conn.status = "connecting"
+                            await db.commit()
+                            logger.info(f"📲 QR scanned for {conn.nickname}, connecting...")
+                        
+                        continue
+                    
+                    # === CONNECTING: Wait for full connection ===
+                    if conn.status == "connecting":
+                        if await self._is_fully_connected(page):
+                            conn.status = "connected"
+                            conn.last_activity_at = datetime.utcnow()
+                            conn.qr_code_base64 = None  # Clear QR
+                            conn.qr_generated_at = None
+                            await db.commit()
+                            
+                            logger.info(f"✅ {conn.nickname} fully connected!")
+                        
+                        continue
+                
+                except Exception as e:
+                    logger.error(f"Error in login_cycle for {conn.id}: {e}", exc_info=True)
+                    continue
+    
+    async def _get_qr_element(self, page):
+        """Try multiple selectors to find QR code element."""
+        for selector in QR_SELECTORS:
+            try:
+                element = await page.query_selector(selector)
+                if element:
+                    return element
+            except Exception:
+                continue
+        return None
+    
+    async def _is_logged_in(self, page) -> bool:
+        """Check if WhatsApp Web is logged in (QR disappeared)."""
+        try:
+            qr = await self._get_qr_element(page)
+            return qr is None
+        except Exception:
+            return False
+    
+    async def _is_fully_connected(self, page) -> bool:
+        """Check if WhatsApp Web is fully loaded and ready."""
+        try:
+            # Check if chat list sidebar is visible
+            sidebar = await page.query_selector('[data-testid="chat-list"]')
+            if sidebar:
+                return True
+            
+            # Fallback: check for main app container
+            app = await page.query_selector('#app')
+            if app:
+                # Additional check: no loading screen
+                loading = await page.query_selector('[data-testid="loader"]')
+                return loading is None
+            
+            return False
+        
+        except Exception:
+            return False
+    
+    # ========================================================================
+    # MONITOR CYCLE - MESSAGE DETECTION (connected only)
+    # ========================================================================
+    
     async def get_active_connections(self, db: AsyncSession) -> list[WhatsAppConnection]:
         """
-        Get all active WhatsApp connections.
+        Get all CONNECTED WhatsApp connections.
         
-        Returns:
-            List of WhatsAppConnection objects with status='connected'
+        Only 'connected' status is monitored for messages.
         """
         result = await db.execute(
             select(WhatsAppConnection).where(
@@ -113,25 +388,21 @@ class WhatsAppWorker:
     
     async def monitor_cycle(self):
         """
-        Single monitoring cycle - check all source groups for new messages.
+        Monitor source groups for new messages.
+        
+        Only processes connections with status='connected'.
         """
         async with AsyncSessionLocal() as db:
-            # Get active connections
             connections = await self.get_active_connections(db)
             
             if not connections:
-                logger.debug("No active connections to monitor")
                 return
-            
-            logger.info(f"Monitoring {len(connections)} connection(s)...")
             
             for conn in connections:
                 try:
-                    # Get source groups
                     source_groups = [g["name"] for g in conn.source_groups]
                     
                     if not source_groups:
-                        logger.debug(f"Connection {conn.nickname} has no source groups")
                         continue
                     
                     # Check for new messages
@@ -143,10 +414,9 @@ class WhatsAppWorker:
                     if new_messages:
                         logger.info(f"Found {len(new_messages)} new message(s) for {conn.nickname}")
                         
-                        # Process each new message
                         for msg in new_messages:
                             await self.process_new_message(db, conn, msg)
-                    
+                
                 except Exception as e:
                     logger.error(f"Error monitoring connection {conn.id}: {e}", exc_info=True)
                     continue
@@ -187,17 +457,21 @@ class WhatsAppWorker:
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
     
+    # ========================================================================
+    # SEND CYCLE - MESSAGE SENDING (connected only)
+    # ========================================================================
+    
     async def send_cycle(self):
         """
-        Single send cycle - attempt to send queued messages.
+        Send queued messages with rate limiting.
+        
+        Only processes connections with status='connected'.
         """
         async with AsyncSessionLocal() as db:
-            # Get active connections
             connections = await self.get_active_connections(db)
             
             for conn in connections:
                 try:
-                    # Get destination groups
                     dest_groups = [g["name"] for g in conn.destination_groups]
                     
                     for group_name in dest_groups:
@@ -214,13 +488,6 @@ class WhatsAppWorker:
                         )
                         
                         if not can_send:
-                            wait_time = self.queue_manager.get_time_until_next_send(
-                                connection_id=str(conn.id),
-                                group_name=group_name,
-                                min_interval_per_group=conn.min_interval_per_group,
-                                min_interval_global=conn.min_interval_global
-                            )
-                            logger.debug(f"Rate limit: {group_name} needs {wait_time}s more")
                             continue
                         
                         # Get message from queue
@@ -260,22 +527,28 @@ class WhatsAppWorker:
                     logger.error(f"Error in send cycle for {conn.id}: {e}", exc_info=True)
                     continue
     
+    # ========================================================================
+    # MAIN LOOP
+    # ========================================================================
+    
     async def main_loop(self):
         """
         Main worker loop.
         
-        Runs two concurrent tasks:
-        1. Monitor task (check for new messages)
-        2. Send task (process send queue)
+        Runs THREE concurrent cycles:
+        1. login_cycle() - Process pending/qr_needed/connecting
+        2. monitor_cycle() - Monitor messages (connected only)
+        3. send_cycle() - Send queued messages (connected only)
         """
         logger.info("Starting main loop...")
         
         try:
             while self.running:
-                # Run both cycles concurrently
+                # Run all three cycles concurrently
                 await asyncio.gather(
-                    self.monitor_cycle(),
-                    self.send_cycle(),
+                    self.login_cycle(),     # NEW!
+                    self.monitor_cycle(),   # connected only
+                    self.send_cycle(),      # connected only
                     return_exceptions=True
                 )
                 
@@ -292,15 +565,11 @@ class WhatsAppWorker:
         """
         Periodic cleanup task.
         
-        Runs every hour to:
-        - Clear old queued messages
-        - Check connection health
+        Runs every hour to clear old queued messages.
         """
         while self.running:
             try:
-                # Clear old queues (messages older than 24h)
                 self.queue_manager.clear_old_queues(max_age_hours=24)
-                
                 logger.info("Cleanup cycle completed")
             
             except Exception as e:
@@ -345,10 +614,11 @@ async def main():
         # Start worker
         await worker_instance.start()
         
-        # Run main loop and cleanup concurrently
+        # Run: main_loop + cleanup + Redis listener
         await asyncio.gather(
             worker_instance.main_loop(),
-            worker_instance.cleanup_cycle()
+            worker_instance.cleanup_cycle(),
+            worker_instance.redis_command_listener()  # NEW!
         )
     
     except KeyboardInterrupt:

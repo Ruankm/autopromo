@@ -43,12 +43,15 @@ class ConnectionPool:
         
         Inclui recovery: se context estiver morto, recria automaticamente.
         
+        IMPORTANTE: NÃO navega automaticamente para WhatsApp Web!
+        Isso é responsabilidade do login_cycle() no Worker.
+        
         Args:
             connection_id: UUID da WhatsAppConnection
             headless: Rodar em modo headless?
             
         Returns:
-            BrowserContext ativo e pronto
+            BrowserContext ativo e pronto (sem navegação automática)
         """
         # Verificar se já existe
         if connection_id in self.contexts:
@@ -95,23 +98,9 @@ class ConnectionPool:
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
         
-        # Garantir que tem pelo menos uma página
-        if len(context.pages) == 0:
-            await context.new_page()
-        
-        page = context.pages[0]
-        
-        # Navegar para WhatsApp Web
-        logger.info(f"Opening WhatsApp Web for {connection_id}")
-        try:
-            await page.goto('https://web.whatsapp.com', timeout=60000, wait_until='domcontentloaded')
-        except Exception as e:
-            logger.error(f"Failed to open WhatsApp Web: {e}")
-            # Não fazer raise, deixar para próxima tentativa
-        
         # Salvar no pool
         self.contexts[connection_id] = context
-        logger.info(f"[OK] Context created and saved: {connection_id}")
+        logger.info(f"✓ Context created and saved: {connection_id}")
         
         return context
     
