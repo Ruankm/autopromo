@@ -109,6 +109,22 @@ async def main(connection_id_str: str):
         print(f"  URL: {page.url}")
         print()
 
+        # CRITICAL: Navegar para WhatsApp Web
+        print("[INFO] Navigating to WhatsApp Web...")
+        try:
+            await page.goto(
+                "https://web.whatsapp.com", 
+                wait_until="domcontentloaded", 
+                timeout=60000
+            )
+            print(f"[✓] Navigated successfully")
+            print(f"  Current URL: {page.url}")
+        except Exception as e:
+            print(f"[ERROR] Failed to navigate: {e}")
+            await pool.close_all()
+            return
+        print()
+
         # Checar status do DOM
         print("[INFO] Checking DOM status...")
         status = await check_connection_status(page)
