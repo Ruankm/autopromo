@@ -253,85 +253,89 @@ class WhatsAppWorker:
                     if not connections:
                         await asyncio.sleep(5)  # Check every 5s
                         continue
-            
-            for conn in connections:
-                try:
-                    conn_id = str(conn.id)
                     
-                    # Get or create persistent context
-                    context = await self.gateway.pool.get_or_create(conn_id)
-                    
-                    # Ensure we have a page
-                    if not context.pages:
-                        page = await context.new_page()
-                    else:
-                        page = context.pages[0]
-                    
-                    # === PENDING: Open WhatsApp Web ===
-                    if conn.status == "pending":
-                        logger.info(f"📱 Opening WhatsApp Web for {conn.nickname}")
-                        await page.goto(
-                            "https://web.whatsapp.com",
-                            wait_until="networkidle",
-                            timeout=60000
-                        )
-                        
-                        conn.status = "qr_needed"
-                        await db.commit()
-                        logger.info(f"✓ WhatsApp Web opened for {conn.nickname}")
-                        continue
-                    
-                    # === QR_NEEDED: Generate and save QR ===
-                    if conn.status == "qr_needed":
-                        # Check if QR needs update (first gen or >50s old)
-                        should_update_qr = (
-                            not conn.qr_generated_at or
-                            (datetime.utcnow() - conn.qr_generated_at).total_seconds() > 50
-                        )
-                        
-                        if should_update_qr:
-                            qr_element = await self._get_qr_element(page)
+                    for conn in connections:
+                        try:
+                            conn_id = str(conn.id)
                             
-                            if qr_element:
-                                try:
-                                    # Screenshot QR code
-                                    qr_bytes = await qr_element.screenshot()
-                                    qr_base64 = base64.b64encode(qr_bytes).decode()
+                            # Get or create persistent context
+                            context = await self.gateway.pool.get_or_create(conn_id)
+                            
+                            # Ensure we have a page
+                            if not context.pages:
+                                page = await context.new_page()
+                            else:
+                                page = context.pages[0]
+                            
+                            # === PENDING: Open WhatsApp Web ===
+                            if conn.status == "pending":
+                                logger.info(f"📱 Opening WhatsApp Web for {conn.nickname}")
+                                await page.goto(
+                                    "https://web.whatsapp.com",
+                                    wait_until="networkidle",
+                                    timeout=60000
+                                )
+                                
+                                conn.status = "qr_needed"
+                                await db.commit()
+                                logger.info(f"✓ WhatsApp Web opened for {conn.nickname}")
+                                continue
+                            
+                            # === QR_NEEDED: Generate and save QR ===
+                            if conn.status == "qr_needed":
+                                # Check if QR needs update (first gen or >50s old)
+                                should_update_qr = (
+                                    not conn.qr_generated_at or
+                                    (datetime.utcnow() - conn.qr_generated_at).total_seconds() > 50
+                                )
+                                
+                                if should_update_qr:
+                                    qr_element = await self._get_qr_element(page)
                                     
-                                    # Save to database
-                                    conn.qr_code_base64 = qr_base64
-                                    conn.qr_generated_at = datetime.utcnow()
+                                    if qr_element:
+                                        try:
+                                            # Screenshot QR code
+                                            qr_bytes = await qr_element.screenshot()
+                                            qr_base64 = base64.b64encode(qr_bytes).decode()
+                                            
+                                            # Save to database
+                                            conn.qr_code_base64 = qr_base64
+                                            conn.qr_generated_at = datetime.utcnow()
+                                            await db.commit()
+                                            
+                                            logger.info(f"✓ QR code generated for {conn.nickname}")
+                                        
+                                        except Exception as e:
+                                            logger.error(f"Error capturing QR for {conn_id}: {e}")
+                                
+                                # Check if user scanned QR
+                                if await self._is_logged_in(page):
+                                    conn.status = "connecting"
+                                    await db.commit()
+                                    logger.info(f"📲 QR scanned for {conn.nickname}, connecting...")
+                                
+                                continue
+                            
+                            # === CONNECTING: Wait for full connection ===
+                            if conn.status == "connecting":
+                                if await self._is_fully_connected(page):
+                                    conn.status = "connected"
+                                    conn.last_activity_at = datetime.utcnow()
+                                    conn.qr_code_base64 = None  # Clear QR
+                                    conn.qr_generated_at = None
                                     await db.commit()
                                     
-                                    logger.info(f"✓ QR code generated for {conn.nickname}")
+                                    logger.info(f"✅ {conn.nickname} fully connected!")
                                 
-                                except Exception as e:
-                                    logger.error(f"Error capturing QR for {conn_id}: {e}")
+                                continue
                         
-                        # Check if user scanned QR
-                        if await self._is_logged_in(page):
-                            conn.status = "connecting"
-                            await db.commit()
-                            logger.info(f"📲 QR scanned for {conn.nickname}, connecting...")
-                        
-                        continue
-                    
-                    # === CONNECTING: Wait for full connection ===
-                    if conn.status == "connecting":
-                        if await self._is_fully_connected(page):
-                            conn.status = "connected"
-                            conn.last_activity_at = datetime.utcnow()
-                            conn.qr_code_base64 = None  # Clear QR
-                            conn.qr_generated_at = None
-                            await db.commit()
-                            
-                            logger.info(f"✅ {conn.nickname} fully connected!")
-                        
-                        continue
+                        except Exception as e:
+                            logger.error(f"Error in login_cycle for {conn.id}: {e}", exc_info=True)
+                            continue
                 
-                except Exception as e:
-                    logger.error(f"Error in login_cycle for {conn.id}: {e}", exc_info=True)
-                    continue
+            except Exception as e:
+                logger.error(f"Login cycle error: {e}", exc_info=True)
+                await asyncio.sleep(5)
     
     async def _get_qr_element(self, page):
         """Try multiple selectors to find QR code element."""
