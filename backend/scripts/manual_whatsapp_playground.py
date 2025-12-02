@@ -488,53 +488,79 @@ async def send_message_to_open_chat(page, text: str):
     """
     Send a message to the currently open chat.
     
+    Uses multiple fallback selectors for the compose box to handle
+    different WhatsApp Web versions.
+    
     Args:
         page: Playwright page object
         text: Text to send
     """
     print("[FORWARD] Sending message to open chat...")
     
-    try:
-        # Find the input box
-        input_box = await page.wait_for_selector(
-            'div[contenteditable="true"][data-testid="conversation-compose-box-input"]',
-            timeout=5000
-        )
-        
-        # Click to focus
-        await input_box.click()
-        await asyncio.sleep(0.3)
-        
-        # Type the message with human-like delay
-        await input_box.type(text, delay=50)
-        
-        print(f"[FORWARD] Text typed ({len(text)} chars), waiting for preview to load...")
-        
-        # Wait for link/image preview to load (if any)
-        await asyncio.sleep(4)
-        
-        # Try to find and click send button
+    # Multiple fallback selectors, starting with most specific
+    selectors = [
+        # 1) Paragraph inside editor (current WhatsApp Web DOM)
+        'div[contenteditable="true"] p.selectable-text.copyable-text.x15bjb6t.x1n2onr6',
+        # 2) Any paragraph inside editor
+        'div[contenteditable="true"] p.selectable-text.copyable-text',
+        # 3) Entire editor (if paragraph fails)
+        'div[contenteditable="true"][data-lexical-editor="true"]',
+        # 4) Last fallback: any contenteditable div
+        'div[contenteditable="true"]',
+    ]
+    
+    compose = None
+    
+    for selector in selectors:
         try:
-            send_button = await page.wait_for_selector(
-                'button[data-testid="compose-btn-send"]',
-                timeout=3000
-            )
-            await send_button.click()
-            print("[FORWARD] ✅ Message sent via send button")
+            print(f"[FORWARD] Trying compose selector: {selector[:60]}...")
+            loc = page.locator(selector).first
+            await loc.wait_for(state="visible", timeout=4000)
+            compose = loc
+            print(f"[FORWARD] ✅ Compose box found!")
+            break
         except PlaywrightTimeoutError:
-            # Fallback: press Enter
-            print("[FORWARD] Send button not found, pressing Enter...")
-            await input_box.press("Enter")
-            print("[FORWARD] ✅ Message sent via Enter key")
-        
-        await asyncio.sleep(1)  # Wait for message to actually send
-        
+            print(f"[FORWARD] ⚠️ Not found, trying next...")
+            continue
+    
+    if compose is None:
+        print("[FORWARD] ❌ Could not find any compose selector")
+        raise Exception("Compose box not found with any selector")
+    
+    # Ensure focus on message box
+    print("[FORWARD] Clicking to focus compose box...")
+    await compose.click()
+    await asyncio.sleep(0.3)
+    
+    # Clear any previous text (optional, but helps)
+    await page.keyboard.press("Control+A")
+    await page.keyboard.press("Backspace")
+    await asyncio.sleep(0.2)
+    
+    # Type the message with small delay to not look like a bot
+    print(f"[FORWARD] ⌨️  Typing message ({len(text)} chars)...")
+    await page.keyboard.type(text, delay=10)
+    
+    # Wait 2 seconds for link preview to load
+    print("[FORWARD] ⏳ Waiting 2s for link preview to load...")
+    await page.wait_for_timeout(2000)
+    
+    # Optional: Try to detect if preview loaded
+    try:
+        preview = page.locator('div._ahwq img[src^="data:image/jpeg;base64,"]').first
+        await preview.wait_for(state="visible", timeout=1000)
+        print("[FORWARD] ✅ Link preview detected")
     except PlaywrightTimeoutError:
-        print("[FORWARD] ❌ Could not find message input box")
-        raise
-    except Exception as e:
-        print(f"[FORWARD] ❌ Error sending message: {e}")
-        raise
+        print("[FORWARD] ⚠️ Link preview not detected, sending anyway")
+    
+    # Now send
+    print("[FORWARD] ⏎ Pressing Enter to send...")
+    await page.keyboard.press("Enter")
+    
+    # Wait a bit to ensure message was sent
+    await asyncio.sleep(1)
+    
+    print("[FORWARD] ✅ Message sent!")
 
 
 async def copy_last_message_between_groups(page, source_name: str, target_name: str):
