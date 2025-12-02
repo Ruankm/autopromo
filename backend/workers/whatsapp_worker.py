@@ -239,17 +239,20 @@ class WhatsAppWorker:
         
         Once connected, monitor_cycle() takes over.
         """
-        async with AsyncSessionLocal() as db:
-            # Get connections awaiting login
-            result = await db.execute(
-                select(WhatsAppConnection).where(
-                    WhatsAppConnection.status.in_(["pending", "qr_needed", "connecting"])
-                )
-            )
-            connections = result.scalars().all()
-            
-            if not connections:
-                return
+        while self.running:
+            try:
+                async with AsyncSessionLocal() as db:
+                    # Get connections awaiting login
+                    result = await db.execute(
+                        select(WhatsAppConnection).where(
+                            WhatsAppConnection.status.in_(["pending", "qr_needed", "connecting"])
+                        )
+                    )
+                    connections = result.scalars().all()
+                    
+                    if not connections:
+                        await asyncio.sleep(5)  # Check every 5s
+                        continue
             
             for conn in connections:
                 try:

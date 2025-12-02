@@ -9,6 +9,7 @@ from .send_log import SendLog
 
 # WhatsApp Web Automation Models
 from .whatsapp_connection import WhatsAppConnection
+from .whatsapp_group import WhatsAppGroup
 from .message_log import MessageLog
 from .offer_log import OfferLog
 
@@ -23,6 +24,7 @@ __all__ = [
     "SendLog",
     # WhatsApp Automation
     "WhatsAppConnection",
+    "WhatsAppGroup",
     "MessageLog",
     "OfferLog",
 ]
