@@ -529,11 +529,44 @@ class WhatsAppWorker:
                     logger.error(f"Error in send cycle for {conn.id}: {e}", exc_info=True)
                     continue
     
+    
     # ========================================================================
     # MAIN LOOP
     # ========================================================================
+    
+    async def main_loop(self):
+        """
+        Main worker loop.
         
-        Runs every hour to clear old queued messages.
+        Runs all processing cycles concurrently:
+        - login_cycle() - Process pending/qr_needed/connecting
+        - monitor_cycle() - Monitor messages (connected only)
+        - send_cycle() - Send queued messages (connected only)
+        """
+        logger.info("Starting main loop...")
+        
+        while self.running:
+            try:
+                # Run all cycles concurrently with exception handling
+                await asyncio.gather(
+                    self.login_cycle(),
+                    self.monitor_cycle(),
+                    self.send_cycle(),
+                    return_exceptions=True
+                )
+                
+                # Small delay between cycles
+                await asyncio.sleep(1)
+            
+            except Exception as e:
+                logger.error(f"Main loop error: {e}", exc_info=True)
+                await asyncio.sleep(5)
+        
+        logger.info("Main loop stopped")
+    
+    async def cleanup_cycle(self):
+        """
+        Cleanup cycle - runs every hour to clear old queued messages.
         """
         while self.running:
             try:
@@ -545,6 +578,7 @@ class WhatsAppWorker:
             
             # Run every hour
             await asyncio.sleep(3600)
+
 
 
 # ============================================================================
@@ -687,7 +721,8 @@ if __name__ == "__main__":
                             "last_message_preview": last_message_preview[:200] if last_message_preview else None
                         })
                         
-                        logger.debug(f"Found group: {display_name}")
+                        # LOG: Show discovery in real-time
+                        logger.info(f"[DISCOVERY] {conn.nickname} → {display_name}")
                     
                     except Exception as e:
                         logger.error(f"Error extracting group: {e}")
@@ -712,7 +747,7 @@ if __name__ == "__main__":
                     saved_count += 1
                 
                 await db.commit()
-                logger.info(f"✓ Discovered and saved {saved_count} groups for connection {conn_id}")
+                logger.info(f"✓ Discovered and saved {saved_count} groups for connection {conn.nickname}")
             
             except Exception as e:
                 logger.error(f"Error in handle_discover_groups: {e}", exc_info=True)
