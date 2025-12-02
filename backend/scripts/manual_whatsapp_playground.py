@@ -548,21 +548,40 @@ async def send_message_to_open_chat(page, text: str):
     await page.keyboard.press("Backspace")
     await asyncio.sleep(0.2)
     
-    # Type the message with small delay to not look like a bot
-    print(f"[FORWARD] ⌨️  Typing message ({len(text)} chars)...")
-    await page.keyboard.type(text, delay=10)
+    # Type the message LINE BY LINE with Shift+Enter for line breaks
+    # This prevents WhatsApp from sending on each \n
+    print(f"[FORWARD] ⌨️  Typing message ({len(text)} chars) line-by-line...")
     
-    # Wait 2 seconds for link preview to load
-    print("[FORWARD] ⏳ Waiting 2s for link preview to load...")
-    await page.wait_for_timeout(2000)
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if line:  # Only type non-empty lines
+            await page.keyboard.type(line, delay=10)
+        
+        # Add line break with Shift+Enter (doesn't send message)
+        if i < len(lines) - 1:  # Don't add extra line break after last line
+            await page.keyboard.press("Shift+Enter")
+            await asyncio.sleep(0.05)  # Small delay between lines
     
-    # Optional: Try to detect if preview loaded
-    try:
-        preview = page.locator('div._ahwq img[src^="data:image/jpeg;base64,"]').first
-        await preview.wait_for(state="visible", timeout=1000)
-        print("[FORWARD] ✅ Link preview detected")
-    except PlaywrightTimeoutError:
-        print("[FORWARD] ⚠️ Link preview not detected, sending anyway")
+    # Wait 4 seconds for link preview to load (increased from 2s)
+    print("[FORWARD] ⏳ Waiting 4s for link preview to load...")
+    await page.wait_for_timeout(4000)
+    
+    # Try to detect if preview loaded - check multiple times
+    preview_found = False
+    for attempt in range(3):
+        try:
+            preview = page.locator('div._ahwq img[src^="data:image/jpeg;base64,"]').first
+            await preview.wait_for(state="visible", timeout=1000)
+            print(f"[FORWARD] ✅ Link preview detected on attempt {attempt + 1}")
+            preview_found = True
+            break
+        except PlaywrightTimeoutError:
+            if attempt < 2:
+                print(f"[FORWARD] ⚠️ Preview not found yet, waiting 1s more...")
+                await page.wait_for_timeout(1000)
+    
+    if not preview_found:
+        print("[FORWARD] ⚠️ Link preview not detected after 6s total, sending anyway")
     
     # Now send
     print("[FORWARD] ⏎ Pressing Enter to send...")
