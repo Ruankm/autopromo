@@ -498,22 +498,23 @@ async def send_message_to_open_chat(page, text: str):
     print("[FORWARD] Sending message to open chat...")
     
     # Multiple fallback selectors, starting with most specific
+    # IMPORTANT: Use aria-label to distinguish from search field!
     selectors = [
-        # 1) Paragraph inside editor (current WhatsApp Web DOM)
-        'div[contenteditable="true"] p.selectable-text.copyable-text.x15bjb6t.x1n2onr6',
-        # 2) Any paragraph inside editor
+        # 1) Most specific: editor with "Digitar" in aria-label (message field, not search)
+        'div[aria-label*="Digitar"][data-lexical-editor="true"]',
+        # 2) Role textbox with "Digitar" label
+        'div[role="textbox"][aria-label*="Digitar"][data-lexical-editor="true"]',
+        # 3) Broader: any lexical editor with textbox role
+        'div[role="textbox"][data-lexical-editor="true"]',
+        # 4) Fallback: paragraph inside any contenteditable (less safe)
         'div[contenteditable="true"] p.selectable-text.copyable-text',
-        # 3) Entire editor (if paragraph fails)
-        'div[contenteditable="true"][data-lexical-editor="true"]',
-        # 4) Last fallback: any contenteditable div
-        'div[contenteditable="true"]',
     ]
     
     compose = None
     
     for selector in selectors:
         try:
-            print(f"[FORWARD] Trying compose selector: {selector[:60]}...")
+            print(f"[FORWARD] Trying compose selector: {selector[:70]}...")
             loc = page.locator(selector).first
             await loc.wait_for(state="visible", timeout=4000)
             compose = loc
@@ -527,9 +528,17 @@ async def send_message_to_open_chat(page, text: str):
         print("[FORWARD] ❌ Could not find any compose selector")
         raise Exception("Compose box not found with any selector")
     
-    # Ensure focus on message box
-    print("[FORWARD] Clicking to focus compose box...")
-    await compose.click()
+    # Click the <p> element inside (the actual editable area)
+    print("[FORWARD] Locating inner <p> element...")
+    try:
+        inner_p = compose.locator('p.selectable-text.copyable-text').first
+        await inner_p.wait_for(state="visible", timeout=2000)
+        print("[FORWARD] ✅ Found inner <p>, clicking...")
+        await inner_p.click()
+    except PlaywrightTimeoutError:
+        print("[FORWARD] ⚠️ Inner <p> not found, clicking outer div...")
+        await compose.click()
+    
     await asyncio.sleep(0.3)
     
     # Clear any previous text (optional, but helps)
