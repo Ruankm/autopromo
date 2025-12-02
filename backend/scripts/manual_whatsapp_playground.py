@@ -456,31 +456,56 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
                 print(f"{log_prefix} Message #{idx} has no div.copyable-text, skipping (system/media)")
                 continue
             
-            # Inside copyable-text, get ALL children (text nodes AND emoji images)
-            # We need to preserve emojis which are <img class="emoji" alt="😱">
+            # Inside copyable-text, extract ALL text and emojis
+            # We need to recursively process the entire DOM tree
+            # because text and emojis are mixed in various nested elements
             
-            # Get all child elements (spans, divs, images)
-            all_children = content.locator('span[dir="auto"], div[dir="auto"], img.emoji')
-            
-            texts = []
-            
-            for j in range(await all_children.count()):
-                child = all_children.nth(j)
-                tag_name = await child.evaluate("el => el.tagName.toLowerCase()")
+            try:
+                # Use JavaScript to extract text + emojis in order
+                text = await content.evaluate("""
+                    (element) => {
+                        function extractTextAndEmojis(node) {
+                            let result = [];
+                            
+                            for (let child of node.childNodes) {
+                                if (child.nodeType === Node.TEXT_NODE) {
+                                    // It's a text node - add the text
+                                    let text = child.textContent.trim();
+                                    if (text) {
+                                        result.push(text);
+                                    }
+                                } else if (child.nodeType === Node.ELEMENT_NODE) {
+                                    // It's an element
+                                    if (child.tagName === 'IMG' && child.classList.contains('emoji')) {
+                                        // It's an emoji image - get alt attribute
+                                        let emoji = child.getAttribute('alt');
+                                        if (emoji) {
+                                            result.push(emoji);
+                                        }
+                                    } else if (child.tagName === 'BR') {
+                                        // Line break
+                                        result.push('\\n');
+                                    } else {
+                                        // Recursively process children
+                                        result = result.concat(extractTextAndEmojis(child));
+                                    }
+                                }
+                            }
+                            
+                            return result;
+                        }
+                        
+                        let parts = extractTextAndEmojis(element);
+                        return parts.join('');
+                    }
+                """)
                 
-                if tag_name == "img":
-                    # It's an emoji image - extract the alt attribute
-                    emoji = await child.get_attribute("alt")
-                    if emoji:
-                        texts.append(emoji)
-                else:
-                    # It's a text node - extract inner text
-                    raw = await child.inner_text()
-                    if raw:
-                        texts.append(raw)
-            
-            # Join with newline to preserve paragraph structure
-            text = "\n".join(texts).strip()
+                text = text.strip()
+            except Exception as e:
+                print(f"{log_prefix} Error extracting text with JS: {e}")
+                # Fallback to simple inner_text
+                text = await content.inner_text()
+                text = text.strip()
             
             if text:
                 preview = text.replace("\n", " ")[:120]
