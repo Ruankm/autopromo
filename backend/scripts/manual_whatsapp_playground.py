@@ -462,11 +462,13 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
             texts = []
             
             for j in range(await text_nodes.count()):
-                raw = (await text_nodes.nth(j).inner_text()).strip()
+                raw = await text_nodes.nth(j).inner_text()
                 if raw:
+                    # Don't strip() individual nodes - preserve internal spacing/newlines
                     texts.append(raw)
             
-            text = " ".join(texts).strip()
+            # Join with newline to preserve paragraph structure
+            text = "\n".join(texts).strip()
             
             if text:
                 preview = text.replace("\n", " ")[:120]
