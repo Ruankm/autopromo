@@ -346,6 +346,11 @@ async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
         print("[FORWARD] ❌ Could not find conversations grid")
         return False
     
+    # IMPORTANT: Scroll to top first to ensure we start from beginning
+    print("[FORWARD] Scrolling to top of conversations list...")
+    await grid.evaluate("el => el.scrollTop = 0")
+    await asyncio.sleep(0.5)  # Let it settle
+    
     # Search with scroll
     for iteration in range(max_scrolls):
         print(f"[FORWARD] Search iteration {iteration + 1}/{max_scrolls}...")
@@ -373,13 +378,13 @@ async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
                     # Click on the row
                     await row.click()
                     
-                    # Wait for chat to load - check for message panel or chat header
-                    await asyncio.sleep(1.5)  # Give time for chat to load
+                    # Wait for chat to load
+                    await asyncio.sleep(1.5)
                     
                     # Verify chat opened by checking for compose box
                     try:
                         await page.wait_for_selector(
-                            'div[contenteditable="true"][data-testid="conversation-compose-box-input"]',
+                            'div[contenteditable="true"][data-lexical-editor="true"]',
                             timeout=5000
                         )
                         print(f"[FORWARD] ✅ Group '{display_name}' opened successfully")
@@ -451,21 +456,28 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
                 print(f"{log_prefix} Message #{idx} has no div.copyable-text, skipping (system/media)")
                 continue
             
-            # Inside copyable-text, get spans/divs with actual text
-            text_nodes = content.locator(
-                "span[dir='auto'], "
-                "div[dir='auto'], "
-                "span.selectable-text, "
-                "div.selectable-text"
-            )
+            # Inside copyable-text, get ALL children (text nodes AND emoji images)
+            # We need to preserve emojis which are <img class="emoji" alt="😱">
+            
+            # Get all child elements (spans, divs, images)
+            all_children = content.locator('span[dir="auto"], div[dir="auto"], img.emoji')
             
             texts = []
             
-            for j in range(await text_nodes.count()):
-                raw = await text_nodes.nth(j).inner_text()
-                if raw:
-                    # Don't strip() individual nodes - preserve internal spacing/newlines
-                    texts.append(raw)
+            for j in range(await all_children.count()):
+                child = all_children.nth(j)
+                tag_name = await child.evaluate("el => el.tagName.toLowerCase()")
+                
+                if tag_name == "img":
+                    # It's an emoji image - extract the alt attribute
+                    emoji = await child.get_attribute("alt")
+                    if emoji:
+                        texts.append(emoji)
+                else:
+                    # It's a text node - extract inner text
+                    raw = await child.inner_text()
+                    if raw:
+                        texts.append(raw)
             
             # Join with newline to preserve paragraph structure
             text = "\n".join(texts).strip()
