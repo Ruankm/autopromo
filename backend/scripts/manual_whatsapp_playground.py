@@ -281,6 +281,316 @@ def format_groups_console(groups):
     print()
 
 
+async def ensure_groups_tab_selected(page):
+    """
+    Ensure the Groups tab is selected.
+    Reusable function for both discovery and forwarding.
+    """
+    try:
+        # Check if already selected
+        already_selected = await page.query_selector('button#group-filter[aria-pressed="true"]')
+        if already_selected:
+            print("[FORWARD] ✅ Groups tab already selected")
+            return True
+        
+        # Click to select
+        print("[FORWARD] Clicking on Groups tab...")
+        groups_tab = await page.wait_for_selector(
+            'button#group-filter[role="tab"][aria-controls="chat-list"]',
+            timeout=10000
+        )
+        await groups_tab.click()
+        
+        # Wait for selection
+        await page.wait_for_selector(
+            'button#group-filter[aria-pressed="true"]',
+            timeout=5000
+        )
+        print("[FORWARD] ✅ Groups tab selected")
+        await asyncio.sleep(0.5)
+        return True
+    
+    except PlaywrightTimeoutError:
+        print("[FORWARD] ❌ Could not find or select Groups tab")
+        return False
+
+
+async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
+    """
+    Find and open a group by name (case-insensitive, partial match).
+    
+    Args:
+        page: Playwright page object
+        target_name: Name (or part of name) of the group to find
+        max_scrolls: Maximum scroll iterations
+    
+    Returns:
+        bool: True if group found and opened, False otherwise
+    """
+    print(f"[FORWARD] Searching for group: '{target_name}'...")
+    
+    # Ensure Groups tab is selected
+    if not await ensure_groups_tab_selected(page):
+        return False
+    
+    # Normalize target name for comparison
+    target_name_normalized = target_name.lower().strip()
+    
+    # Get conversations grid
+    try:
+        grid = await page.wait_for_selector(
+            'div[aria-label="Lista de conversas"][role="grid"]',
+            timeout=10000
+        )
+    except PlaywrightTimeoutError:
+        print("[FORWARD] ❌ Could not find conversations grid")
+        return False
+    
+    # Search with scroll
+    for iteration in range(max_scrolls):
+        print(f"[FORWARD] Search iteration {iteration + 1}/{max_scrolls}...")
+        
+        rows = await grid.query_selector_all('div[role="row"]')
+        
+        for row in rows:
+            try:
+                # Get group name
+                name_el = await row.query_selector('div._ak8q span[dir="auto"][title]')
+                if not name_el:
+                    continue
+                
+                display_name = await name_el.get_attribute('title')
+                if not display_name:
+                    display_name = await name_el.inner_text()
+                
+                display_name_normalized = display_name.lower().strip()
+                
+                # Check if match (partial match, case-insensitive)
+                if target_name_normalized in display_name_normalized:
+                    print(f"[FORWARD] ✅ Found group: '{display_name}'")
+                    print(f"[FORWARD] Clicking to open...")
+                    
+                    # Click on the row
+                    await row.click()
+                    
+                    # Wait for chat to load - check for message panel or chat header
+                    await asyncio.sleep(1.5)  # Give time for chat to load
+                    
+                    # Verify chat opened by checking for compose box
+                    try:
+                        await page.wait_for_selector(
+                            'div[contenteditable="true"][data-testid="conversation-compose-box-input"]',
+                            timeout=5000
+                        )
+                        print(f"[FORWARD] ✅ Group '{display_name}' opened successfully")
+                        return True
+                    except PlaywrightTimeoutError:
+                        print(f"[FORWARD] ⚠️ Group seems opened but compose box not found")
+                        return True  # Still consider success
+            
+            except Exception as e:
+                continue
+        
+        # Scroll down for more groups
+        await grid.evaluate("el => el.scrollBy(0, 1000)")
+        await asyncio.sleep(0.4)
+    
+    print(f"[FORWARD] ❌ Group '{target_name}' not found after {max_scrolls} scrolls")
+    return False
+
+
+async def get_last_message_text_in_open_chat(page):
+    """
+    Get the text of the last message in the currently open chat.
+    
+    Returns:
+        str | None: Text of last message, or None if not found
+    """
+    print("[FORWARD] Reading last message from open chat...")
+    
+    try:
+        # Wait for messages panel to be visible
+        await page.wait_for_selector('[data-testid="conversation-panel-body"]', timeout=5000)
+        await asyncio.sleep(0.5)  # Let messages load
+        
+        # Try primary selector for message containers
+        messages = await page.query_selector_all('div[data-testid="msg-container"]')
+        
+        if not messages or len(messages) == 0:
+            # Fallback: try alternative selector
+            messages = await page.query_selector_all('div.message-in, div.message-out')
+        
+        if not messages or len(messages) == 0:
+            print("[FORWARD] ❌ No messages found in open chat")
+            return None
+        
+        print(f"[FORWARD] Found {len(messages)} messages in chat")
+        
+        # Get the LAST message
+        last_message = messages[-1]
+        
+        # Extract text from message - try multiple selectors
+        text_elements = await last_message.query_selector_all('span[dir="auto"]')
+        
+        if not text_elements:
+            # Fallback: get all text
+            text = await last_message.inner_text()
+        else:
+            # Concatenate all text spans
+            texts = []
+            for el in text_elements:
+                t = await el.inner_text()
+                if t and t.strip():
+                    texts.append(t.strip())
+            text = " ".join(texts)
+        
+        text = text.strip()
+        
+        if not text:
+            print("[FORWARD] ⚠️ Last message appears to be empty")
+            return None
+        
+        # Truncate for logging
+        text_preview = text[:80] + "..." if len(text) > 80 else text
+        print(f"[FORWARD] ✅ Last message text: \"{text_preview}\"")
+        
+        return text
+    
+    except PlaywrightTimeoutError:
+        print("[FORWARD] ❌ Timeout waiting for messages panel")
+        return None
+    except Exception as e:
+        print(f"[FORWARD] ❌ Error reading last message: {e}")
+        return None
+
+
+async def send_message_to_open_chat(page, text: str):
+    """
+    Send a message to the currently open chat.
+    
+    Args:
+        page: Playwright page object
+        text: Text to send
+    """
+    print("[FORWARD] Sending message to open chat...")
+    
+    try:
+        # Find the input box
+        input_box = await page.wait_for_selector(
+            'div[contenteditable="true"][data-testid="conversation-compose-box-input"]',
+            timeout=5000
+        )
+        
+        # Click to focus
+        await input_box.click()
+        await asyncio.sleep(0.3)
+        
+        # Type the message with human-like delay
+        await input_box.type(text, delay=50)
+        
+        print(f"[FORWARD] Text typed ({len(text)} chars), waiting for preview to load...")
+        
+        # Wait for link/image preview to load (if any)
+        await asyncio.sleep(4)
+        
+        # Try to find and click send button
+        try:
+            send_button = await page.wait_for_selector(
+                'button[data-testid="compose-btn-send"]',
+                timeout=3000
+            )
+            await send_button.click()
+            print("[FORWARD] ✅ Message sent via send button")
+        except PlaywrightTimeoutError:
+            # Fallback: press Enter
+            print("[FORWARD] Send button not found, pressing Enter...")
+            await input_box.press("Enter")
+            print("[FORWARD] ✅ Message sent via Enter key")
+        
+        await asyncio.sleep(1)  # Wait for message to actually send
+        
+    except PlaywrightTimeoutError:
+        print("[FORWARD] ❌ Could not find message input box")
+        raise
+    except Exception as e:
+        print(f"[FORWARD] ❌ Error sending message: {e}")
+        raise
+
+
+async def copy_last_message_between_groups(page, source_name: str, target_name: str):
+    """
+    Copy the last message from source group to target group.
+    
+    Args:
+        page: Playwright page object
+        source_name: Name (or part) of source group
+        target_name: Name (or part) of target group
+    """
+    print()
+    print("=" * 70)
+    print(f"COPYING MESSAGE: '{source_name}' → '{target_name}'")
+    print("=" * 70)
+    print()
+    
+    # Step 1: Open source group
+    print("[FORWARD] Step 1: Opening source group...")
+    success = await find_and_open_group(page, source_name)
+    if not success:
+        print("[FORWARD] ❌ Failed to open source group. Aborting.")
+        return
+    
+    await asyncio.sleep(0.8)  # Let messages load
+    
+    # Step 2: Get last message text
+    print()
+    print("[FORWARD] Step 2: Reading last message...")
+    last_message = await get_last_message_text_in_open_chat(page)
+    if not last_message:
+        print("[FORWARD] ❌ Could not read last message. Aborting.")
+        return
+    
+    # Log full message (truncated)
+    message_preview = last_message[:120] + "..." if len(last_message) > 120 else last_message
+    print()
+    print("-" * 70)
+    print(f"MESSAGE TO FORWARD:")
+    print(f"\"{message_preview}\"")
+    print("-" * 70)
+    print()
+    
+    # Step 3: Go back to Groups tab
+    print("[FORWARD] Step 3: Returning to Groups tab...")
+    await ensure_groups_tab_selected(page)
+    await asyncio.sleep(0.5)
+    
+    # Step 4: Open target group
+    print()
+    print("[FORWARD] Step 4: Opening target group...")
+    success = await find_and_open_group(page, target_name)
+    if not success:
+        print("[FORWARD] ❌ Failed to open target group. Aborting.")
+        return
+    
+    await asyncio.sleep(0.8)
+    
+    # Step 5: Send the message
+    print()
+    print("[FORWARD] Step 5: Sending message to target group...")
+    try:
+        await send_message_to_open_chat(page, last_message)
+        print()
+        print("=" * 70)
+        print("✅ MESSAGE FORWARDED SUCCESSFULLY!")
+        print("=" * 70)
+        print()
+    except Exception as e:
+        print()
+        print("=" * 70)
+        print(f"❌ FAILED TO SEND MESSAGE: {e}")
+        print("=" * 70)
+        print()
+
+
 async def main():
     args = parse_args()
     
@@ -432,13 +742,42 @@ async def main():
         else:
             print("[PLAYGROUND] ⚠️ No groups found, JSON not created.")
         
+        # INTERACTIVE MENU - Message Forwarding
+        print()
+        print("=" * 70)
+        print("PLAYGROUND ACTIONS")
+        print("=" * 70)
+        print("1. Copy LAST message from one group to another")
+        print("0. Exit (close browser)")
+        print()
+        
+        choice = input("Choose an option (0/1): ").strip()
+        
+        if choice == "1":
+            print()
+            source_name = input("Enter (part of) SOURCE group name: ").strip()
+            target_name = input("Enter (part of) TARGET group name: ").strip()
+            
+            if source_name and target_name:
+                try:
+                    await copy_last_message_between_groups(page, source_name, target_name)
+                except Exception as e:
+                    print(f"[PLAYGROUND] Error during forwarding: {e}")
+            else:
+                print("[PLAYGROUND] ⚠️ Both group names are required")
+        
+        # After action or if choice == "0", proceed to close
         if headless:
-            print("[PLAYGROUND] ⏳ Keeping browser open for 30s...")
-            await asyncio.sleep(30)
+            print()
+            print("[PLAYGROUND] ⏳ Keeping browser open for 10s before closing...")
+            await asyncio.sleep(10)
         else:
-            print("[PLAYGROUND] HEADFUL MODE: Browser window is open.")
-            print("[PLAYGROUND] Press F12 to inspect DOM")
-            print("[PLAYGROUND] Press CTRL+C to close")
+            print()
+            print("[PLAYGROUND] HEADFUL MODE: Browser window remains open.")
+            print("[PLAYGROUND] You can:")
+            print("  - Press F12 to inspect DOM")
+            print("  - Interact with WhatsApp manually")
+            print("  - Press CTRL+C when done")
             print()
             
             try:
@@ -448,6 +787,7 @@ async def main():
                 print()
                 print("[PLAYGROUND] CTRL+C detected. Closing...")
         
+        print()
         print("[PLAYGROUND] Closing browser...")
         await browser.close()
         print()
