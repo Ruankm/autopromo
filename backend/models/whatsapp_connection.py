@@ -68,6 +68,7 @@ class WhatsAppConnection(Base):
     
     # Relacionamentos
     user = relationship("User", back_populates="whatsapp_connections")
+    groups = relationship("WhatsAppGroup", back_populates="connection", cascade="all, delete-orphan")
     message_logs = relationship("MessageLog", back_populates="connection", cascade="all, delete-orphan")
     offer_logs = relationship("OfferLog", back_populates="connection", cascade="all, delete-orphan")
     
