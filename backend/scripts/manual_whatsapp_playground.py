@@ -399,68 +399,88 @@ async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
     return False
 
 
-async def get_last_message_text_in_open_chat(page):
+async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 20):
     """
-    Get the text of the last message in the currently open chat.
+    Get the text of the last TEXT message in the currently open chat.
+    
+    - Traverses backwards (last → previous)
+    - Ignores messages with no text (images, stickers, audio only)
+    - Uses selectors compatible with current WhatsApp Web DOM:
+      * Containers: div.message-in / div.message-out / div.focusable-list-item.message-*
+      * Content: div.copyable-text + spans/divs with actual text
+    
+    Args:
+        page: Playwright page object
+        max_messages_to_check: Maximum number of messages to check (from last to first)
     
     Returns:
-        str | None: Text of last message, or None if not found
+        str | None: Text of last text message, or None if not found
     """
-    print("[FORWARD] Reading last message from open chat...")
+    log_prefix = "[FORWARD]"
     
     try:
-        # Wait for messages panel to be visible
-        await page.wait_for_selector('[data-testid="conversation-panel-body"]', timeout=5000)
-        await asyncio.sleep(0.5)  # Let messages load
+        # Give time for chat to finish rendering
+        await page.wait_for_timeout(1000)
         
-        # Try primary selector for message containers
-        messages = await page.query_selector_all('div[data-testid="msg-container"]')
+        # Message container selectors (from DOM inspection)
+        msg_container_selector = (
+            "div.focusable-list-item.message-in, "
+            "div.focusable-list-item.message-out, "
+            "div.message-in, "
+            "div.message-out"
+        )
         
-        if not messages or len(messages) == 0:
-            # Fallback: try alternative selector
-            messages = await page.query_selector_all('div.message-in, div.message-out')
+        messages = page.locator(msg_container_selector)
+        count = await messages.count()
+        print(f"{log_prefix} Found {count} message containers in open chat")
         
-        if not messages or len(messages) == 0:
-            print("[FORWARD] ❌ No messages found in open chat")
+        if count == 0:
+            print(f"{log_prefix} ❌ No messages found in DOM")
             return None
         
-        print(f"[FORWARD] Found {len(messages)} messages in chat")
+        # Scan backwards, but limit quantity for safety
+        start_index = max(0, count - max_messages_to_check)
         
-        # Get the LAST message
-        last_message = messages[-1]
-        
-        # Extract text from message - try multiple selectors
-        text_elements = await last_message.query_selector_all('span[dir="auto"]')
-        
-        if not text_elements:
-            # Fallback: get all text
-            text = await last_message.inner_text()
-        else:
-            # Concatenate all text spans
+        for idx in range(count - 1, start_index - 1, -1):
+            msg = messages.nth(idx)
+            
+            # "Copyable content" of the message (from DOM structure)
+            content = msg.locator("div.copyable-text")
+            
+            if await content.count() == 0:
+                print(f"{log_prefix} Message #{idx} has no div.copyable-text, skipping (system/media)")
+                continue
+            
+            # Inside copyable-text, get spans/divs with actual text
+            text_nodes = content.locator(
+                "span[dir='auto'], "
+                "div[dir='auto'], "
+                "span.selectable-text, "
+                "div.selectable-text"
+            )
+            
             texts = []
-            for el in text_elements:
-                t = await el.inner_text()
-                if t and t.strip():
-                    texts.append(t.strip())
-            text = " ".join(texts)
+            
+            for j in range(await text_nodes.count()):
+                raw = (await text_nodes.nth(j).inner_text()).strip()
+                if raw:
+                    texts.append(raw)
+            
+            text = " ".join(texts).strip()
+            
+            if text:
+                preview = text.replace("\n", " ")[:120]
+                print(f"{log_prefix} ✅ Last TEXT message found at index {idx}: {preview!r}")
+                return text
+            
+            # If we got here, message is probably media-only (image, sticker, etc.)
+            print(f"{log_prefix} Message #{idx} has no text (media only?), skipping")
         
-        text = text.strip()
-        
-        if not text:
-            print("[FORWARD] ⚠️ Last message appears to be empty")
-            return None
-        
-        # Truncate for logging
-        text_preview = text[:80] + "..." if len(text) > 80 else text
-        print(f"[FORWARD] ✅ Last message text: \"{text_preview}\"")
-        
-        return text
-    
-    except PlaywrightTimeoutError:
-        print("[FORWARD] ❌ Timeout waiting for messages panel")
+        print(f"{log_prefix} ❌ No TEXT messages found in last {max_messages_to_check} messages")
         return None
+    
     except Exception as e:
-        print(f"[FORWARD] ❌ Error reading last message: {e}")
+        print(f"{log_prefix} ❌ Error reading last message: {e}")
         return None
 
 
