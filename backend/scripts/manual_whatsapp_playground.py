@@ -14,12 +14,12 @@ Propósito:
 USAGE INSTRUCTIONS:
 
 1. DOCKER (Headless Mode):
-   cd C:\Users\Ruan\Desktop\autopromo
+   cd C:/Users/Ruan/Desktop/autopromo
    docker-compose up -d
    docker-compose exec backend python backend/scripts/manual_whatsapp_playground.py
 
 2. WINDOWS (Headful Mode - Visual Debugging):
-   cd C:\Users\Ruan\Desktop\autopromo
+   cd C:/Users/Ruan/Desktop/autopromo
    pip install -r backend/requirements.txt
    playwright install chromium
    python backend/scripts/manual_whatsapp_playground.py --headful
@@ -1121,7 +1121,7 @@ async def main():
             print("TO SCAN QR CODE:")
             print("-" * 70)
             print("1. On Windows host, run:")
-            print(f"   cd C:\\Users\\Ruan\\Desktop\\autopromo")
+            print(f"   cd C:/Users/Ruan/Desktop/autopromo")
             print(f"   docker cp autopromo-backend:/app/logs/manual_whatsapp_qr.png .")
             print()
             print("2. Open manual_whatsapp_qr.png and scan with phone")
@@ -1165,7 +1165,7 @@ async def main():
             print(f"[PLAYGROUND] Total groups saved: {len(groups)}")
             print()
             print("To copy JSON to Windows:")
-            print(f"  cd C:\\Users\\Ruan\\Desktop\\autopromo")
+            print(f"  cd C:/Users/Ruan/Desktop/autopromo")
             print(f"  docker cp autopromo-backend:/app/logs/manual_whatsapp_groups.json .")
             print()
             
