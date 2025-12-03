@@ -481,154 +481,240 @@ async def ensure_groups_tab_selected(page):
         return False
 
 
+async def get_conversations_search_input(page):
+    """
+    Get the search input field from the conversations SIDEBAR (not the message composer).
+    
+    Returns:
+        Playwright ElementHandle for search input, or None if not found
+    """
+    try:
+        # The search is inside #side (the left sidebar)
+        # More specific selectorsthan just contenteditable to avoid composer
+        search_selectors = [
+            # Most specific: inside #side container
+            '#side div[contenteditable="true"][data-tab="3"]',
+            # Alternative: search by parent structure
+            'div[role="textbox"][data-tab="3"]',
+            # Fallback: first contenteditable in #side
+            '#side div[contenteditable="true"]',
+        ]
+        
+        for selector in search_selectors:
+            try:
+                search_input = await page.wait_for_selector(selector, timeout=2000)
+                if search_input:
+                    print(f"[SEARCH] ✅ Found search input: {selector}")
+                    return search_input
+            except PlaywrightTimeoutError:
+                continue
+        
+        print("[SEARCH] ⚠️ Could not find search input in sidebar")
+        return None
+        
+    except Exception as e:
+        print(f"[SEARCH] ❌ Error finding search input: {e}")
+        return None
+
+
+async def clear_search_input_if_present(page):
+    """
+    Clear the search input field if it exists and has text.
+    Useful to restore normal conversation list after search.
+    """
+    try:
+        search_input = await get_conversations_search_input(page)
+        if search_input:
+            await search_input.click()
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await page.keyboard.press("Escape")  # Close search
+            await asyncio.sleep(0.3)
+            print("[SEARCH] ✅ Search input cleared")
+            return True
+        return False
+    except Exception as e:
+        print(f"[SEARCH] ⚠️ Error clearing search: {e}")
+        return False
+
+
+async def _click_row_and_wait_chat_open(page, row, display_name: str) -> bool:
+    """
+    Click on a conversation row and wait for the chat to actually open.
+    
+    Validates chat opened by checking for:
+      - Chat header with name
+      - Compose message field
+    
+    Returns:
+        bool: True if chat opened successfully, False otherwise
+    """
+    try:
+        # Click the row
+        await row.click()
+        print(f"[FORWARD] Clicked on row for: '{display_name}'")
+        
+        # Wait for chat to load - try multiple indicators
+        chat_opened = False
+        
+        # Option 1: Wait for chat header
+        try:
+            await page.wait_for_selector(
+                'header div[role="button"] span[dir="auto"]',
+                timeout=3000
+            )
+            chat_opened = True
+        except PlaywrightTimeoutError:
+            pass
+        
+        # Option 2: Wait for compose field (from send_message_to_open_chat selectors)
+        if not chat_opened:
+            try:
+                await page.wait_for_selector(
+                    'div[aria-label*="Digitar"][data-lexical-editor="true"]',
+                    timeout=3000
+                )
+                chat_opened = True
+            except PlaywrightTimeoutError:
+                pass
+        
+        if chat_opened:
+            print(f"[FORWARD] ✅ Chat '{display_name}' opened successfully")
+            return True
+        else:
+            print(f"[FORWARD] ⚠️ Row clicked but chat header/compose not found for '{display_name}'")
+            return False
+            
+    except Exception as e:
+        print(f"[FORWARD] ❌ Error clicking row for '{display_name}': {e}")
+        return False
+
+
 async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
     """
     Find and open a group/contact by name (case-insensitive, partial match).
     
-    Strategy:
-      1. Try using WhatsApp's search field first (fastest)
-      2. If search fails, fallback to manual scroll through conversations list
+    Strategy (NEW ORDER):
+      1. Try SCROLL through conversations list FIRST (most reliable)
+      2. If scroll fails, fallback to SEARCH field (works for any chat type)
     
     Args:
         page: Playwright page object
         target_name: Name (or part of name) of the group/contact to find
-        max_scrolls: Maximum scroll iterations for fallback
+        max_scrolls: Maximum scroll iterations
     
     Returns:
-        bool: True if group found and opened, False otherwise
+        bool: True if chat found and opened, False otherwise
     """
     print(f"[FORWARD] Searching for group: '{target_name}'...")
-    
-    # Ensure Groups tab is NOT necessarily selected - we want to search ALL chats
-    # (Groups tab filters out 1:1 contacts like "Autopromo")
     
     # Normalize target name for comparison
     target_name_normalized = target_name.lower().strip()
     
     # ========================================================================
-    # STEP 0: Try using the search field (fastest method)
+    # STEP A: Try SCROLL method first (most reliable, uses #pane-side)
     # ========================================================================
-    print("[FORWARD] Step 0: Trying search field...")
+    print("[FORWARD] Step A: Scanning list with scroll...")
+    
+    # Ensure Groups tab is selected for scroll
+    if not await ensure_groups_tab_selected(page):
+        print("[FORWARD] ⚠️ Could not select Groups tab, will try search anyway")
+    else:
+        # Try scroll method
+        try:
+            # Get conversations grid
+            grid = await page.wait_for_selector(
+                'div[aria-label="Lista de conversas"][role="grid"]',
+                timeout=10000
+            )
+            
+            # Get scroll container (#pane-side)
+            scroll_container = await get_conversations_scroll_container(page)
+            if not scroll_container:
+                print("[FORWARD] ⚠️ Could not find scroll container, skipping to search")
+            else:
+                # Scroll to top first
+                await scroll_container.evaluate("el => el.scrollTop = 0")
+                await asyncio.sleep(0.5)
+                
+                # Search with scroll
+                for iteration in range(max_scrolls):
+                    rows = await grid.query_selector_all('div[role="row"]')
+                    
+                    # Scan all visible rows
+                    for row in rows:
+                        try:
+                            name_el = await row.query_selector('div._ak8q span[dir="auto"][title]')
+                            if not name_el:
+                                continue
+                            
+                            display_name = await name_el.get_attribute('title')
+                            if not display_name:
+                                display_name = await name_el.inner_text()
+                            
+                            display_name_normalized = display_name.lower().strip()
+                            
+                            # Check match
+                            if target_name_normalized in display_name_normalized:
+                                print(f"[FORWARD] ✅ Found via scroll: '{display_name}'")
+                                
+                                # Click and validate
+                                if await _click_row_and_wait_chat_open(page, row, display_name):
+                                    return True
+                                else:
+                                    # Click failed, continue searching
+                                    continue
+                        
+                        except Exception as e:
+                            continue
+                    
+                    # Scroll down for more
+                    await scroll_container.evaluate("el => el.scrollBy(0, 1000)")
+                    await asyncio.sleep(0.4)
+                
+                print(f"[FORWARD] ⚠️ Not found via scroll after {max_scrolls} iterations")
+        
+        except Exception as e:
+            print(f"[FORWARD] ⚠️ Scroll method failed: {e}")
+    
+    # ========================================================================
+    # STEP B: Fallback to SEARCH field (works for contacts/groups not in tab)
+    # ========================================================================
+    print("[FORWARD] Step B: Trying search field...")
+    
     try:
-        # Find the search input - try multiple selectors
-        search_selectors = [
-            'div[contenteditable="true"][data-lexical-editor="true"][role="textbox"]',  # Main search
-            'div[contenteditable="true"][data-tab="3"]',  # Alternative
-        ]
+        # Get search input from SIDEBAR (not composer)
+        search_input = await get_conversations_search_input(page)
         
-        search_input = None
-        for selector in search_selectors:
-            try:
-                search_input = await page.wait_for_selector(selector, timeout=2000)
-                if search_input:
-                    print(f"[FORWARD] ✅ Found search input: {selector[:50]}...")
-                    break
-            except PlaywrightTimeoutError:
-                continue
+        if not search_input:
+            print("[FORWARD] ❌ Search input not found")
+            return False
         
-        if search_input:
-            # Clear any existing search
-            await search_input.click()
-            await page.keyboard.press("Control+A")
-            await page.keyboard.press("Backspace")
-            await asyncio.sleep(0.3)
-            
-            # Type the target name
-            await page.keyboard.type(target_name, delay=50)
-            await asyncio.sleep(1.0)  # Wait for results
-            
-            # Look for results in the conversations list
+        # Clear any existing search
+        await search_input.click()
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Backspace")
+        await asyncio.sleep(0.3)
+        
+        # Type target name
+        await page.keyboard.type(target_name, delay=50)
+        await asyncio.sleep(0.8)  # Wait for search results
+        
+        # Get results grid
+        try:
             grid = await page.wait_for_selector(
                 'div[aria-label="Lista de conversas"][role="grid"]',
                 timeout=3000
             )
-            
-            rows = await grid.query_selector_all('div[role="row"]')
-            print(f"[FORWARD] Found {len(rows)} search results")
-            
-            # Try to find matching row
-            for row in rows:
-                try:
-                    name_el = await row.query_selector('div._ak8q span[dir="auto"][title]')
-                    if not name_el:
-                        continue
-                    
-                    display_name = await name_el.get_attribute('title')
-                    if not display_name:
-                        display_name = await name_el.inner_text()
-                    
-                    display_name_normalized = display_name.lower().strip()
-                    
-                    if target_name_normalized in display_name_normalized:
-                        print(f"[FORWARD] ✅ Found via search: '{display_name}'")
-                        
-                        # Click the row
-                        await row.click()
-                        await asyncio.sleep(1.5)
-                        
-                        # Verify chat opened
-                        try:
-                            await page.wait_for_selector(
-                                'div[contenteditable="true"][data-lexical-editor="true"]',
-                                timeout=5000
-                            )
-                            print(f"[FORWARD] ✅ Chat '{display_name}' opened successfully via search")
-                            return True
-                        except PlaywrightTimeoutError:
-                            print(f"[FORWARD] ⚠️ Chat seems opened but compose box not found")
-                            return True
-                
-                except Exception as e:
-                    continue
-            
-            print("[FORWARD] ⚠️ Search didn't find target, clearingsearch and trying scroll...")
-            
-            # Clear search before fallback
-            await search_input.click()
-            await page.keyboard.press("Control+A")
-            await page.keyboard.press("Backspace")
-            await page.keyboard.press("Escape")
-            await asyncio.sleep(0.5)
-    
-    except Exception as e:
-        print(f"[FORWARD] ⚠️ Search field method failed: {e}")
-        print("[FORWARD] Falling back to scroll method...")
-    
-    # ========================================================================
-    # FALLBACK: Manual scroll through conversations list
-    # ========================================================================
-    print("[FORWARD] Fallback: Using scroll method...")
-    
-    # Ensure Groups tab is selected for scroll fallback
-    if not await ensure_groups_tab_selected(page):
-        return False
-    
-    # Get conversations grid and scroll container
-    try:
-        grid = await page.wait_for_selector(
-            'div[aria-label="Lista de conversas"][role="grid"]',
-            timeout=10000
-        )
-    except PlaywrightTimeoutError:
-        print("[FORWARD] ❌ Could not find conversations grid")
-        return False
-    
-    scroll_container = await get_conversations_scroll_container(page)
-    if not scroll_container:
-        print("[FORWARD] ❌ Could not find scroll container")
-        return False
-    
-    # Scroll to top first
-    print("[FORWARD] Scrolling to top of conversations list...")
-    await scroll_container.evaluate("el => el.scrollTop = 0")
-    await asyncio.sleep(0.5)
-    
-    # Search with scroll
-    for iteration in range(max_scrolls):
-        print(f"[FORWARD] Scroll iteration {iteration + 1}/{max_scrolls}...")
+        except PlaywrightTimeoutError:
+            print("[FORWARD] ⚠️ Grid not found after search")
+            await clear_search_input_if_present(page)
+            return False
         
         rows = await grid.query_selector_all('div[role="row"]')
+        print(f"[FORWARD] Found {len(rows)} search results")
         
+        # Scan search results
         for row in rows:
             try:
                 name_el = await row.query_selector('div._ak8q span[dir="auto"][title]')
@@ -642,31 +728,35 @@ async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
                 display_name_normalized = display_name.lower().strip()
                 
                 if target_name_normalized in display_name_normalized:
-                    print(f"[FORWARD] ✅ Found via scroll: '{display_name}'")
-                    print(f"[FORWARD] Clicking to open...")
+                    print(f"[FORWARD] ✅ Found via search: '{display_name}'")
                     
-                    await row.click()
-                    await asyncio.sleep(1.5)
+                    # Click and validate
+                    success = await _click_row_and_wait_chat_open(page, row, display_name)
                     
-                    try:
-                        await page.wait_for_selector(
-                            'div[contenteditable="true"][data-lexical-editor="true"]',
-                            timeout=5000
-                        )
-                        print(f"[FORWARD] ✅ Chat '{display_name}' opened successfully")
+                    # Clear search to restore normal list
+                    await clear_search_input_if_present(page)
+                    
+                    if success:
                         return True
-                    except PlaywrightTimeoutError:
-                        print(f"[FORWARD] ⚠️ Chat seems opened but compose box not found")
-                        return True
+                    else:
+                        # Click failed but still return False after clearing
+                        return False
             
             except Exception as e:
                 continue
         
-        # Scroll down
-        await scroll_container.evaluate("el => el.scrollBy(0, 1000)")
-        await asyncio.sleep(0.4)
+        print(f"[FORWARD] ⚠️ Search did not find '{target_name}'")
+        
+        # Clear search and restore state
+        await clear_search_input_if_present(page)
+        
+    except Exception as e:
+        print(f"[FORWARD] ❌ Search method failed: {e}")
+        # Try to clear search anyway
+        await clear_search_input_if_present(page)
     
-    print(f"[FORWARD] ❌ Group '{target_name}' not found after {max_scrolls} scrolls")
+    # Both methods failed
+    print(f"[FORWARD] ❌ Could not find '{target_name}' via scroll or search")
     return False
 
 
