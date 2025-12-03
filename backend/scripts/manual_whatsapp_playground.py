@@ -9,30 +9,28 @@ Propósito:
   - COLETAR LISTA COMPLETA DE GRUPOS com scroll automático
   - Salvar dados em JSON
   - Exibir resumo formatado no console
+  - COPIAR mensagens entre grupos (single + multi-message com scroll)
 
-Modo 1: Rodar DENTRO do Docker (headless)
------------------------------------------------------------------
-No host (Windows), dentro do diretório do projeto:
+USAGE INSTRUCTIONS:
 
-  cd C:\\Users\\Ruan\\Desktop\\autopromo
-  docker-compose up -d
-  docker-compose exec backend python backend/scripts/manual_whatsapp_playground.py
+1. DOCKER (Headless Mode):
+   cd C:\Users\Ruan\Desktop\autopromo
+   docker-compose up -d
+   docker-compose exec backend python backend/scripts/manual_whatsapp_playground.py
 
-Modo 2: Rodar DIRETO no Windows (headful, com janela visível)
--------------------------------------------------------------
-Pré-requisitos:
-  - Python 3 instalado no Windows
-  - Playwright instalado:
-      cd C:\\Users\\Ruan\\Desktop\\autopromo
-      pip install -r backend/requirements.txt
-      playwright install chromium
+2. WINDOWS (Headful Mode - Visual Debugging):
+   cd C:\Users\Ruan\Desktop\autopromo
+   pip install -r backend/requirements.txt
+   playwright install chromium
+   python backend/scripts/manual_whatsapp_playground.py --headful
 
-Rodar:
-
-  cd C:\\Users\\Ruan\\Desktop\\autopromo
-  python backend/scripts/manual_whatsapp_playground.py --headful
-
-Isso vai abrir uma janela real do Chromium, permitindo F12 para inspecionar DOM.
+CONFIGURATION:
+  Edit the constants below to configure message forwarding defaults:
+  - SOURCE_GROUP_NAME: Group to copy messages FROM
+  - TARGET_GROUP_NAME: Group to send messages TO
+  - MESSAGES_TO_FORWARD: How many messages to collect (default)
+  - MAX_SCROLLS_FOR_MESSAGES: Max scroll-up iterations when collecting
+  - DELAY_BETWEEN_MESSAGES: Seconds to wait between sending each message
 """
 import asyncio
 import base64
@@ -40,12 +38,63 @@ import argparse
 import os
 import json
 from pathlib import Path
+from dataclasses import dataclass
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+
+
+# ============================================================================
+# PLAYGROUND CONFIGURATION
+# ============================================================================
+SOURCE_GROUP_NAME = "Escorrega o Preço | 121 🔥"  # Can be partial match
+TARGET_GROUP_NAME = "Autopromo"                    # Can be partial match
+MESSAGES_TO_FORWARD = 5                            # Number of messages to collect
+MAX_SCROLLS_FOR_MESSAGES = 10                      # Max scroll iterations when collecting
+DELAY_BETWEEN_MESSAGES = 2.0                       # Seconds between sending each message
+# ============================================================================
+
+
+@dataclass
+class ScrapedMessage:
+    """Represents a scraped message from WhatsApp."""
+    text: str
+    index: int  # Position in chat (for ordering oldest to newest)
+
+
+def dedupe_lines_preserving_order(text: str) -> str:
+    """
+    Remove duplicate lines from text while preserving order.
+    Fixes the bug where link card subtitles are duplicated.
+    
+    Args:
+        text: Raw text with potential duplicates
+        
+    Returns:
+        Text with duplicate lines removed, emojis preserved
+    """
+    lines = text.split('\n')
+    seen = set()
+    result = []
+    
+    for line in lines:
+        norm = line.strip()
+        if not norm:
+            # Keep empty lines for formatting, but don't duplicate consecutive ones
+            if not result or result[-1] != '':
+                result.append('')
+            continue
+        
+        if norm in seen:
+            continue  # Skip duplicate line
+        
+        seen.add(norm)
+        result.append(line)
+    
+    return '\n'.join(result)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Manual WhatsApp Web playground - Group Discovery Debug Tool."
+        description="Manual WhatsApp Web playground - Group Discovery & Message Forwarding Tool."
     )
     parser.add_argument(
         "--headful",
@@ -410,6 +459,7 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
     
     - Traverses backwards (last → previous)
     - Ignores messages with no text (images, stickers, audio only)
+    - Applies deduplication to fix link card subtitle bug
     - Uses selectors compatible with current WhatsApp Web DOM:
       * Containers: div.message-in / div.message-out / div.focusable-list-item.message-*
       * Content: div.copyable-text + spans/divs with actual text
@@ -419,7 +469,7 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
         max_messages_to_check: Maximum number of messages to check (from last to first)
     
     Returns:
-        str | None: Text of last text message, or None if not found
+        str | None: Text of last text message with deduplication, or None if not found
     """
     log_prefix = "[FORWARD]"
     
@@ -519,8 +569,21 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
                 text = text.strip()
             
             if text:
-                preview = text.replace("\n", " ")[:120]
-                print(f"{log_prefix} ✅ Last TEXT message found at index {idx}: {preview!r}")
+                # Apply deduplication to fix link card subtitle duplication bug
+                text_raw = text
+                text = dedupe_lines_preserving_order(text)
+                
+                # Log raw vs deduped for comparison
+                preview_raw = text_raw.replace("\n", " ")[:100]
+                preview_deduped = text.replace("\n", " ")[:100]
+                
+                if text != text_raw:
+                    lines_removed = text_raw.count('\n') - text.count('\n')
+                    print(f"{log_prefix} [RAW] {preview_raw!r}")
+                    print(f"{log_prefix} [DEDUPED] {preview_deduped!r} (removed {lines_removed} duplicate lines)")
+                else:
+                    print(f"{log_prefix} ✅ Last TEXT message found at index {idx}: {preview_deduped!r}")
+                
                 return text
             
             # If we got here, message is probably media-only (image, sticker, etc.)
@@ -532,6 +595,138 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
     except Exception as e:
         print(f"{log_prefix} ❌ Error reading last message: {e}")
         return None
+
+
+async def collect_last_n_messages(
+    page, 
+    count: int = 5, 
+    max_scrolls: int = 10
+) -> list[ScrapedMessage]:
+    """
+    Collect the last N messages from currently open chat.
+    Scrolls up if needed to collect enough messages.
+    
+    Args:
+        page: Playwright page object
+        count: Number of messages to collect
+        max_scrolls: Maximum scroll-up iterations
+        
+    Returns:
+        List of ScrapedMessage objects, ordered oldest to newest
+    """
+    log_prefix = "[COLLECT]"
+    print(f"{log_prefix} Collecting last {count} messages...")
+    
+    # Message container selectors (same as get_last_message_text_in_open_chat)
+    msg_container_selector = (
+        "div.focusable-list-item.message-in, "
+        "div.focusable-list-item.message-out, "
+        "div.message-in, "
+        "div.message-out"
+    )
+    
+    collected_messages = []
+    scroll_iterations = 0
+    
+    while len(collected_messages) < count and scroll_iterations < max_scrolls:
+        # Get current messages
+        messages = page.locator(msg_container_selector)
+        total_count = await messages.count()
+        
+        if total_count == 0:
+            print(f"{log_prefix} No messages found in chat")
+            break
+        
+        # How many do we need?
+        needed = count - len(collected_messages)
+        
+        # Determine range to scan (from end backwards)
+        start_idx = max(0, total_count - needed - len(collected_messages))
+        
+        # Collect from this batch
+        for idx in range(total_count - 1, start_idx - 1, -1):
+            if len(collected_messages) >= count:
+                break
+            
+            # Check if we already have this message index
+            if any(m.index == idx for m in collected_messages):
+                continue
+            
+            msg = messages.nth(idx)
+            content = msg.locator("div.copyable-text")
+            
+            if await content.count() == 0:
+                continue  # Skip system/media messages
+            
+            # Extract text using same logic as get_last_message_text_in_open_chat
+            try:
+                text = await content.evaluate("""
+                    (element) => {
+                        function extractTextAndEmojis(node, isRoot = false) {
+                            let result = [];
+                            
+                            for (let i = 0; i < node.childNodes.length; i++) {
+                                let child = node.childNodes[i];
+                                
+                                if (child.nodeType === Node.TEXT_NODE) {
+                                    let text = child.textContent;
+                                    if (text) {
+                                        result.push(text);
+                                    }
+                                } else if (child.nodeType === Node.ELEMENT_NODE) {
+                                    if (child.tagName === 'IMG' && child.classList.contains('emoji')) {
+                                        let emoji = child.getAttribute('alt');
+                                        if (emoji) {
+                                            result.push(emoji);
+                                        }
+                                    } else if (child.tagName === 'BR') {
+                                        result.push('\\n');
+                                    } else if (child.tagName === 'DIV' || child.tagName === 'P') {
+                                        if (result.length > 0 && !isRoot) {
+                                            result.push('\\n');
+                                        }
+                                        result = result.concat(extractTextAndEmojis(child, false));
+                                    } else {
+                                        result = result.concat(extractTextAndEmojis(child, false));
+                                    }
+                                }
+                            }
+                            
+                            return result;
+                        }
+                        
+                        let parts = extractTextAndEmojis(element, true);
+                        let fullText = parts.join('');
+                        return fullText.trim();
+                    }
+                """)
+                
+                if text:
+                    # Apply deduplication
+                    text = dedupe_lines_preserving_order(text)
+                    collected_messages.append(ScrapedMessage(text=text, index=idx))
+                    print(f"{log_prefix} Collected message {len(collected_messages)}/{count} (idx={idx})")
+            
+            except Exception as e:
+                print(f"{log_prefix} Error extracting message at idx {idx}: {e}")
+                continue
+        
+        # If we have enough, stop
+        if len(collected_messages) >= count:
+            break
+        
+        # Otherwise, scroll up to get more
+        print(f"{log_prefix} Need more messages, scrolling up... (iteration {scroll_iterations + 1}/{max_scrolls})")
+        await page.evaluate("document.querySelector('[data-testid=\"conversation-panel-body\"]').scrollBy(0, -500)")
+        await asyncio.sleep(0.5)
+        scroll_iterations += 1
+    
+    # Sort by index (oldest first)
+    collected_messages.sort(key=lambda m: m.index)
+    
+    print(f"{log_prefix} ✅ Collected {len(collected_messages)} messages (requested {count}, scrolls: {scroll_iterations})")
+    
+    return collected_messages
 
 
 async def send_message_to_open_chat(page, text: str):
@@ -641,6 +836,39 @@ async def send_message_to_open_chat(page, text: str):
     print("[FORWARD] ✅ Message sent!")
 
 
+async def send_multiple_messages_to_open_chat(
+    page,
+    messages: list[ScrapedMessage],
+    delay_between: float = 2.0
+) -> None:
+    """
+    Send multiple messages to currently open chat with delays.
+    
+    Args:
+        page: Playwright page object
+        messages: List of ScrapedMessage objects
+        delay_between: Seconds to wait between messages
+    """
+    log_prefix = "[SEND]"
+    total = len(messages)
+    
+    for i, message in enumerate(messages, 1):
+        print(f"{log_prefix} Sending message {i}/{total}...")
+        
+        try:
+            await send_message_to_open_chat(page, message.text)
+            
+            if i < total:  # Don't wait after last message
+                print(f"{log_prefix} Waiting {delay_between}s before next message...")
+                await asyncio.sleep(delay_between)
+        
+        except Exception as e:
+            print(f"{log_prefix} ❌ Failed to send message {i}/{total}: {e}")
+            # Continue with next message
+    
+    print(f"{log_prefix} ✅ Sent {total} messages")
+
+
 async def copy_last_message_between_groups(page, source_name: str, target_name: str):
     """
     Copy the last message from source group to target group.
@@ -715,6 +943,90 @@ async def copy_last_message_between_groups(page, source_name: str, target_name: 
         print()
 
 
+async def copy_multiple_messages_between_groups(
+    page,
+    source_name: str,
+    target_name: str,
+    count: int = 5,
+    max_scrolls: int = 10
+) -> None:
+    """
+    Copy the last N messages from source group to target group.
+    
+    Args:
+        page: Playwright page object
+        source_name: Name (or part) of source group
+        target_name: Name (or part) of target group
+        count: Number of messages to forward
+        max_scrolls: Max scroll iterations when collecting
+    """
+    print()
+    print("=" * 70)
+    print(f"COPYING {count} MESSAGES: '{source_name}' → '{target_name}'")
+    print("=" * 70)
+    print()
+    
+    # Step 1: Open source group
+    print("[FORWARD] Step 1: Opening source group...")
+    success = await find_and_open_group(page, source_name)
+    if not success:
+        print("[FORWARD] ❌ Failed to open source group. Aborting.")
+        return
+    
+    await asyncio.sleep(1.0)
+    
+    # Step 2: Collect messages
+    print()
+    print(f"[FORWARD] Step 2: Collecting last {count} messages...")
+    messages = await collect_last_n_messages(page, count, max_scrolls)
+    
+    if not messages:
+        print("[FORWARD] ❌ No messages collected. Aborting.")
+        return
+    
+    # Log collected messages preview
+    print()
+    print("-" * 70)
+    print(f"COLLECTED {len(messages)} MESSAGES:")
+    for i, msg in enumerate(messages, 1):
+        preview = msg.text[:80].replace('\n', ' ')
+        print(f"  {i}. {preview}...")
+    print("-" * 70)
+    print()
+    
+    # Step 3: Return to Groups tab
+    print("[FORWARD] Step 3: Returning to Groups tab...")
+    await ensure_groups_tab_selected(page)
+    await asyncio.sleep(0.5)
+    
+    # Step 4: Open target group
+    print()
+    print("[FORWARD] Step 4: Opening target group...")
+    success = await find_and_open_group(page, target_name)
+    if not success:
+        print("[FORWARD] ❌ Failed to open target group. Aborting.")
+        return
+    
+    await asyncio.sleep(1.0)
+    
+    # Step 5: Send all messages
+    print()
+    print(f"[FORWARD] Step 5: Sending {len(messages)} messages to target group...")
+    try:
+        await send_multiple_messages_to_open_chat(page, messages, DELAY_BETWEEN_MESSAGES)
+        print()
+        print("=" * 70)
+        print(f"✅ {len(messages)} MESSAGES FORWARDED SUCCESSFULLY!")
+        print("=" * 70)
+        print()
+    except Exception as e:
+        print()
+        print("=" * 70)
+        print(f"❌ FAILED TO SEND MESSAGES: {e}")
+        print("=" * 70)
+        print()
+
+
 async def main():
     args = parse_args()
     
@@ -728,7 +1040,7 @@ async def main():
         headless = True
     
     print("=" * 70)
-    print("WHATSAPP WEB PLAYGROUND - GROUP DISCOVERY DEBUG TOOL")
+    print("WHATSAPP WEB PLAYGROUND - GROUP DISCOVERY & FORWARDING TOOL")
     print("=" * 70)
     print(f"[PLAYGROUND] Mode: {'HEADLESS (invisible)' if headless else 'HEADFUL (visible window)'}")
     
@@ -872,10 +1184,11 @@ async def main():
         print("PLAYGROUND ACTIONS")
         print("=" * 70)
         print("1. Copy LAST message from one group to another")
+        print("2. Copy LAST N messages from one group to another")
         print("0. Exit (close browser)")
         print()
         
-        choice = input("Choose an option (0/1): ").strip()
+        choice = input("Choose an option (0/1/2): ").strip()
         
         if choice == "1":
             print()
@@ -885,6 +1198,23 @@ async def main():
             if source_name and target_name:
                 try:
                     await copy_last_message_between_groups(page, source_name, target_name)
+                except Exception as e:
+                    print(f"[PLAYGROUND] Error during forwarding: {e}")
+            else:
+                print("[PLAYGROUND] ⚠️ Both group names are required")
+        
+        elif choice == "2":
+            print()
+            source_name = input("Enter (part of) SOURCE group name: ").strip()
+            target_name = input("Enter (part of) TARGET group name: ").strip()
+            count_input = input(f"How many messages to forward? (default: {MESSAGES_TO_FORWARD}): ").strip()
+            count = int(count_input) if count_input.isdigit() else MESSAGES_TO_FORWARD
+            
+            if source_name and target_name:
+                try:
+                    await copy_multiple_messages_between_groups(
+                        page, source_name, target_name, count, MAX_SCROLLS_FOR_MESSAGES
+                    )
                 except Exception as e:
                     print(f"[PLAYGROUND] Error during forwarding: {e}")
             else:
