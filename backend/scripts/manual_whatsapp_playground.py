@@ -458,19 +458,21 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
             
             # Inside copyable-text, extract ALL text and emojis
             # We need to recursively process the entire DOM tree
-            # because text and emojis are mixed in various nested elements
+            # while preserving spacing and line breaks
             
             try:
                 # Use JavaScript to extract text + emojis in order
                 text = await content.evaluate("""
                     (element) => {
-                        function extractTextAndEmojis(node) {
+                        function extractTextAndEmojis(node, isRoot = false) {
                             let result = [];
                             
-                            for (let child of node.childNodes) {
+                            for (let i = 0; i < node.childNodes.length; i++) {
+                                let child = node.childNodes[i];
+                                
                                 if (child.nodeType === Node.TEXT_NODE) {
-                                    // It's a text node - add the text
-                                    let text = child.textContent.trim();
+                                    // It's a text node - add the text AS IS (no trim!)
+                                    let text = child.textContent;
                                     if (text) {
                                         result.push(text);
                                     }
@@ -485,9 +487,16 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
                                     } else if (child.tagName === 'BR') {
                                         // Line break
                                         result.push('\\n');
-                                    } else {
+                                    } else if (child.tagName === 'DIV' || child.tagName === 'P') {
+                                        // Block-level element - add newline before if not first
+                                        if (result.length > 0 && !isRoot) {
+                                            result.push('\\n');
+                                        }
                                         // Recursively process children
-                                        result = result.concat(extractTextAndEmojis(child));
+                                        result = result.concat(extractTextAndEmojis(child, false));
+                                    } else {
+                                        // Inline element - recursively process WITHOUT newline
+                                        result = result.concat(extractTextAndEmojis(child, false));
                                     }
                                 }
                             }
@@ -495,12 +504,14 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
                             return result;
                         }
                         
-                        let parts = extractTextAndEmojis(element);
-                        return parts.join('');
+                        let parts = extractTextAndEmojis(element, true);
+                        let fullText = parts.join('');
+                        
+                        // Only trim the FINAL result, not individual pieces
+                        return fullText.trim();
                     }
                 """)
                 
-                text = text.strip()
             except Exception as e:
                 print(f"{log_prefix} Error extracting text with JS: {e}")
                 # Fallback to simple inner_text
