@@ -104,6 +104,116 @@ def parse_args():
     return parser.parse_args()
 
 
+async def get_conversations_scroll_container(page):
+    """
+    Get the actual scrollable container for the conversations list.
+    The grid itself doesn't scroll - its parent container does.
+    
+    Returns:
+        Playwright ElementHandle for the scroll container, or None if not found
+    """
+    try:
+        # First get the grid
+        grid = await page.wait_for_selector(
+            'div[aria-label="Lista de conversas"][role="grid"]',
+            timeout=5000
+        )
+        
+        # The parent of the grid is typically the scroll container
+        # Use JavaScript to find the scrollable parent
+        scroll_container = await page.evaluate("""
+            () => {
+                const grid = document.querySelector('div[aria-label="Lista de conversas"][role="grid"]');
+                if (!grid) return null;
+                
+                // Walk up the DOM tree to find the scrollable parent
+                let parent = grid.parentElement;
+                while (parent) {
+                    const style = window.getComputedStyle(parent);
+                    const overflowY = style.overflowY;
+                    const scrollHeight = parent.scrollHeight;
+                    const clientHeight = parent.clientHeight;
+                    
+                    // Found a scrollable container
+                    if ((overflowY === 'auto' || overflowY === 'scroll') && scrollHeight > clientHeight) {
+                        // Return a unique identifier
+                        if (!parent.id) {
+                            parent.id = 'conversations-scroll-container-' + Date.now();
+                        }
+                        return parent.id;
+                    }
+                    
+                    parent = parent.parentElement;
+                }
+                
+                return null;
+            }
+        """)
+        
+        if scroll_container:
+            print(f"[SCROLL] ✅ Found scroll container: #{scroll_container}")
+            return await page.wait_for_selector(f"#{scroll_container}")
+        else:
+            print("[SCROLL] ⚠️ Could not find scroll container, falling back to grid")
+            return grid
+            
+    except Exception as e:
+        print(f"[SCROLL] ❌ Error finding scroll container: {e}")
+        return None
+
+
+async def ensure_chat_scrolled_to_bottom(page):
+    """
+    Ensure the chat panel is scrolled to the bottom (most recent messages).
+    Useful when opening a chat that may have the "new messages" arrow visible.
+    
+    Logs scroll position before and after.
+    """
+    log_prefix = "[CHAT_SCROLL]"
+    
+    try:
+        # Find the conversation panel
+        panel = await page.wait_for_selector(
+            '[data-testid="conversation-panel-body"]',
+            timeout=5000
+        )
+        
+        # Get current scroll position
+        scroll_info_before = await panel.evaluate("""
+            (el) => ({
+                scrollTop: el.scrollTop,
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight
+            })
+        """)
+        
+        print(f"{log_prefix} Before scroll: top={scroll_info_before['scrollTop']}, "
+              f"height={scroll_info_before['scrollHeight']}, "
+              f"client={scroll_info_before['clientHeight']}")
+        
+        # Scroll to bottom
+        await panel.evaluate("(el) => { el.scrollTop = el.scrollHeight; }")
+        
+        # Wait for any lazy-loaded content
+        await asyncio.sleep(0.5)
+        
+        # Get new scroll position
+        scroll_info_after = await panel.evaluate(
+            "(el) => ({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight })"
+        )
+        
+        print(f"{log_prefix} After scroll: top={scroll_info_after['scrollTop']}, "
+              f"height={scroll_info_after['scrollHeight']}")
+        
+        if scroll_info_after['scrollTop'] > scroll_info_before['scrollTop']:
+            print(f"{log_prefix} ✅ Scrolled down by {scroll_info_after['scrollTop'] - scroll_info_before['scrollTop']}px")
+        else:
+            print(f"{log_prefix} ✅ Already at bottom")
+            
+    except Exception as e:
+        print(f"{log_prefix} ❌ Error scrolling chat to bottom: {e}")
+
+
 async def collect_groups(page, logs_dir):
     """
     Collect all groups from WhatsApp Web Groups tab with auto-scroll.
@@ -141,7 +251,7 @@ async def collect_groups(page, logs_dir):
     
     await asyncio.sleep(1)  # Let the list load
     
-    # 2) Get conversations grid
+    # 2) Get conversations grid and scroll container
     print()
     print("[DISCOVERY] Step 2: Locating conversations grid...")
     try:
@@ -160,6 +270,13 @@ async def collect_groups(page, logs_dir):
     except PlaywrightTimeoutError:
         print("[DISCOVERY] ❌ Could not find conversations grid")
         print("[DISCOVERY] Selector: div[aria-label=\"Lista de conversas\"][role=\"grid\"]")
+        return []
+    
+    # Get the actual scroll container (parent of grid)
+    print("[DISCOVERY] Finding scroll container...")
+    scroll_container = await get_conversations_scroll_container(page)
+    if not scroll_container:
+        print("[DISCOVERY] ❌ Could not find scroll container, aborting")
         return []
     
     # 3) Collect groups with scroll
@@ -252,17 +369,17 @@ async def collect_groups(page, logs_dir):
             print(f"[DISCOVERY] ✅ Collected all {len(groups)} groups (matched aria-rowcount)")
             break
         
-        # Scroll down
-        current_scroll_top = await grid.evaluate("el => el.scrollTop")
-        scroll_height = await grid.evaluate("el => el.scrollHeight")
+        # Scroll down using the correct scroll container
+        current_scroll_top = await scroll_container.evaluate("el => el.scrollTop")
+        scroll_height = await scroll_container.evaluate("el => el.scrollHeight")
         
         print(f"[DISCOVERY] Scrolling... (current: {current_scroll_top}, height: {scroll_height})")
         
-        await grid.evaluate("el => el.scrollBy(0, 1000)")
+        await scroll_container.evaluate("el => el.scrollBy(0, 1000)")
         await asyncio.sleep(0.5)  # Wait for new content to load
         
         # Check if scroll position changed
-        new_scroll_top = await grid.evaluate("el => el.scrollTop")
+        new_scroll_top = await scroll_container.evaluate("el => el.scrollTop")
         
         if new_scroll_top == previous_scroll_top:
             no_change_count += 1
@@ -366,26 +483,127 @@ async def ensure_groups_tab_selected(page):
 
 async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
     """
-    Find and open a group by name (case-insensitive, partial match).
+    Find and open a group/contact by name (case-insensitive, partial match).
+    
+    Strategy:
+      1. Try using WhatsApp's search field first (fastest)
+      2. If search fails, fallback to manual scroll through conversations list
     
     Args:
         page: Playwright page object
-        target_name: Name (or part of name) of the group to find
-        max_scrolls: Maximum scroll iterations
+        target_name: Name (or part of name) of the group/contact to find
+        max_scrolls: Maximum scroll iterations for fallback
     
     Returns:
         bool: True if group found and opened, False otherwise
     """
     print(f"[FORWARD] Searching for group: '{target_name}'...")
     
-    # Ensure Groups tab is selected
-    if not await ensure_groups_tab_selected(page):
-        return False
+    # Ensure Groups tab is NOT necessarily selected - we want to search ALL chats
+    # (Groups tab filters out 1:1 contacts like "Autopromo")
     
     # Normalize target name for comparison
     target_name_normalized = target_name.lower().strip()
     
-    # Get conversations grid
+    # ========================================================================
+    # STEP 0: Try using the search field (fastest method)
+    # ========================================================================
+    print("[FORWARD] Step 0: Trying search field...")
+    try:
+        # Find the search input - try multiple selectors
+        search_selectors = [
+            'div[contenteditable="true"][data-lexical-editor="true"][role="textbox"]',  # Main search
+            'div[contenteditable="true"][data-tab="3"]',  # Alternative
+        ]
+        
+        search_input = None
+        for selector in search_selectors:
+            try:
+                search_input = await page.wait_for_selector(selector, timeout=2000)
+                if search_input:
+                    print(f"[FORWARD] ✅ Found search input: {selector[:50]}...")
+                    break
+            except PlaywrightTimeoutError:
+                continue
+        
+        if search_input:
+            # Clear any existing search
+            await search_input.click()
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await asyncio.sleep(0.3)
+            
+            # Type the target name
+            await page.keyboard.type(target_name, delay=50)
+            await asyncio.sleep(1.0)  # Wait for results
+            
+            # Look for results in the conversations list
+            grid = await page.wait_for_selector(
+                'div[aria-label="Lista de conversas"][role="grid"]',
+                timeout=3000
+            )
+            
+            rows = await grid.query_selector_all('div[role="row"]')
+            print(f"[FORWARD] Found {len(rows)} search results")
+            
+            # Try to find matching row
+            for row in rows:
+                try:
+                    name_el = await row.query_selector('div._ak8q span[dir="auto"][title]')
+                    if not name_el:
+                        continue
+                    
+                    display_name = await name_el.get_attribute('title')
+                    if not display_name:
+                        display_name = await name_el.inner_text()
+                    
+                    display_name_normalized = display_name.lower().strip()
+                    
+                    if target_name_normalized in display_name_normalized:
+                        print(f"[FORWARD] ✅ Found via search: '{display_name}'")
+                        
+                        # Click the row
+                        await row.click()
+                        await asyncio.sleep(1.5)
+                        
+                        # Verify chat opened
+                        try:
+                            await page.wait_for_selector(
+                                'div[contenteditable="true"][data-lexical-editor="true"]',
+                                timeout=5000
+                            )
+                            print(f"[FORWARD] ✅ Chat '{display_name}' opened successfully via search")
+                            return True
+                        except PlaywrightTimeoutError:
+                            print(f"[FORWARD] ⚠️ Chat seems opened but compose box not found")
+                            return True
+                
+                except Exception as e:
+                    continue
+            
+            print("[FORWARD] ⚠️ Search didn't find target, clearingsearch and trying scroll...")
+            
+            # Clear search before fallback
+            await search_input.click()
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+    
+    except Exception as e:
+        print(f"[FORWARD] ⚠️ Search field method failed: {e}")
+        print("[FORWARD] Falling back to scroll method...")
+    
+    # ========================================================================
+    # FALLBACK: Manual scroll through conversations list
+    # ========================================================================
+    print("[FORWARD] Fallback: Using scroll method...")
+    
+    # Ensure Groups tab is selected for scroll fallback
+    if not await ensure_groups_tab_selected(page):
+        return False
+    
+    # Get conversations grid and scroll container
     try:
         grid = await page.wait_for_selector(
             'div[aria-label="Lista de conversas"][role="grid"]',
@@ -395,20 +613,24 @@ async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
         print("[FORWARD] ❌ Could not find conversations grid")
         return False
     
-    # IMPORTANT: Scroll to top first to ensure we start from beginning
+    scroll_container = await get_conversations_scroll_container(page)
+    if not scroll_container:
+        print("[FORWARD] ❌ Could not find scroll container")
+        return False
+    
+    # Scroll to top first
     print("[FORWARD] Scrolling to top of conversations list...")
-    await grid.evaluate("el => el.scrollTop = 0")
-    await asyncio.sleep(0.5)  # Let it settle
+    await scroll_container.evaluate("el => el.scrollTop = 0")
+    await asyncio.sleep(0.5)
     
     # Search with scroll
     for iteration in range(max_scrolls):
-        print(f"[FORWARD] Search iteration {iteration + 1}/{max_scrolls}...")
+        print(f"[FORWARD] Scroll iteration {iteration + 1}/{max_scrolls}...")
         
         rows = await grid.query_selector_all('div[role="row"]')
         
         for row in rows:
             try:
-                # Get group name
                 name_el = await row.query_selector('div._ak8q span[dir="auto"][title]')
                 if not name_el:
                     continue
@@ -419,34 +641,29 @@ async def find_and_open_group(page, target_name: str, max_scrolls: int = 30):
                 
                 display_name_normalized = display_name.lower().strip()
                 
-                # Check if match (partial match, case-insensitive)
                 if target_name_normalized in display_name_normalized:
-                    print(f"[FORWARD] ✅ Found group: '{display_name}'")
+                    print(f"[FORWARD] ✅ Found via scroll: '{display_name}'")
                     print(f"[FORWARD] Clicking to open...")
                     
-                    # Click on the row
                     await row.click()
-                    
-                    # Wait for chat to load
                     await asyncio.sleep(1.5)
                     
-                    # Verify chat opened by checking for compose box
                     try:
                         await page.wait_for_selector(
                             'div[contenteditable="true"][data-lexical-editor="true"]',
                             timeout=5000
                         )
-                        print(f"[FORWARD] ✅ Group '{display_name}' opened successfully")
+                        print(f"[FORWARD] ✅ Chat '{display_name}' opened successfully")
                         return True
                     except PlaywrightTimeoutError:
-                        print(f"[FORWARD] ⚠️ Group seems opened but compose box not found")
-                        return True  # Still consider success
+                        print(f"[FORWARD] ⚠️ Chat seems opened but compose box not found")
+                        return True
             
             except Exception as e:
                 continue
         
-        # Scroll down for more groups
-        await grid.evaluate("el => el.scrollBy(0, 1000)")
+        # Scroll down
+        await scroll_container.evaluate("el => el.scrollBy(0, 1000)")
         await asyncio.sleep(0.4)
     
     print(f"[FORWARD] ❌ Group '{target_name}' not found after {max_scrolls} scrolls")
@@ -893,6 +1110,11 @@ async def copy_last_message_between_groups(page, source_name: str, target_name: 
     
     await asyncio.sleep(0.8)  # Let messages load
     
+    # Ensure chat is scrolled to bottom (most recent messages)
+    print()
+    print("[FORWARD] Ensuring chat is at bottom...")
+    await ensure_chat_scrolled_to_bottom(page)
+    
     # Step 2: Get last message text
     print()
     print("[FORWARD] Step 2: Reading last message...")
@@ -974,6 +1196,11 @@ async def copy_multiple_messages_between_groups(
         return
     
     await asyncio.sleep(1.0)
+    
+    # Ensure chat is scrolled to bottom (most recent messages)
+    print()
+    print("[FORWARD] Ensuring chat is at bottom...")
+    await ensure_chat_scrolled_to_bottom(page)
     
     # Step 2: Collect messages
     print()
