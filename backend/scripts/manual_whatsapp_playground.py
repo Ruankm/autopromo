@@ -92,6 +92,96 @@ def dedupe_lines_preserving_order(text: str) -> str:
     return '\n'.join(result)
 
 
+def normalize_link_message(text: str) -> str:
+    """
+    Post-process link messages (Mercado Livre, Amazon, etc.) to fix common issues:
+      - Separate domain+title when concatenated (e.g. "mercadolivre.comEsmerilhadeira...")
+      - Remove duplicate URLs
+      - Remove redundant domain-only lines
+    
+    Args:
+        text: Text after dedupe_lines_preserving_order
+        
+    Returns:
+        Normalized text with link card issues fixed
+    """
+    import re
+    
+    lines = text.split('\n')
+    result = []
+    
+    # Track URLs to deduplicate
+    seen_urls = set()
+    url_lines = {}  # url -> line (keep the richer one)
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        # Skip empty lines initially, will restore spacing later
+        if not stripped:
+            result.append('')
+            continue
+        
+        # Pattern 1: Fix "domain.comTitle..." (no space between domain and title)
+        # Example: "mercadolivre.comEsmerilhadeira..." -> "mercadolivre.com\nEsmerilhadeira..."
+        domain_title_pattern = r'^([\w.-]+\.(com|com\.br|net|org))([A-ZÀ-Ú][^\s]*)(.*)$'
+        domain_match = re.match(domain_title_pattern, stripped)
+        
+        if domain_match:
+            domain = domain_match.group(1)
+            title_start = domain_match.group(3)
+            rest = domain_match.group(4)
+            
+            # Split into two lines: domain alone, then title
+            result.append(domain)
+            full_title = title_start + rest
+            if full_title.strip():
+                result.append(full_title)
+            continue
+        
+        # Pattern 2: Extract URLs from lines
+        url_pattern = r'https?://\S+'
+        urls_in_line = re.findall(url_pattern, stripped)
+        
+        if urls_in_line:
+            # Track which line has each URL
+            for url in urls_in_line:
+                if url in seen_urls:
+                    # Duplicate URL - decide which line to keep
+                    existing_line = url_lines.get(url, '')
+                    
+                    # Keep the line with more context (call-to-action, descriptive text)
+                    if len(stripped) > len(existing_line):
+                        # Replace with richer line
+                        url_lines[url] = stripped
+                    # Skip this line if less rich
+                    continue
+                else:
+                    seen_urls.add(url)
+                    url_lines[url] = stripped
+                    result.append(line)
+                    break
+        else:
+            # Pattern 3: Domain-only lines (e.g. "mercadolivre.com")
+            # Only add if it's not redundant with a URL or richer line
+            domain_only_pattern = r'^([\w.-]+\.(com|com\.br|net|org))$'
+            if re.match(domain_only_pattern, stripped):
+                # Check if we already have a richer version with this domain
+                has_richer = False
+                for existing_line in result:
+                    if stripped in existing_line and len(existing_line) > len(stripped):
+                        has_richer = True
+                        break
+                
+                if not has_richer:
+                    result.append(line)
+            else:
+                # Normal line, keep it
+                result.append(line)
+    
+    return '\n'.join(result)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Manual WhatsApp Web playground - Group Discovery & Message Forwarding Tool."
@@ -819,6 +909,7 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
             
             try:
                 # Use JavaScript to extract text + emojis in order
+                # Improved to handle link cards better (domain, title separate lines)
                 text = await content.evaluate("""
                     (element) => {
                         function extractTextAndEmojis(node, isRoot = false) {
@@ -844,16 +935,37 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
                                     } else if (child.tagName === 'BR') {
                                         // Line break
                                         result.push('\\n');
-                                    } else if (child.tagName === 'DIV' || child.tagName === 'P') {
-                                        // Block-level element - add newline before if not first
-                                        if (result.length > 0 && !isRoot) {
-                                            result.push('\\n');
+                                    } else {
+                                        // Check if this element should force a line break
+                                        // (block-level elements like DIV, P, SPAN with display:block, etc.)
+                                        const style = window.getComputedStyle(child);
+                                        const display = style.display;
+                                        const isBlockLevel = (
+                                            child.tagName === 'DIV' || 
+                                            child.tagName === 'P' ||
+                                            display === 'block' ||
+                                            display === 'flex' ||
+                                            display === 'grid'
+                                        );
+                                        
+                                        // Add newline before block element (if not the first item)
+                                        if (isBlockLevel && result.length > 0 && !isRoot) {
+                                            // Only add newline if the last item isn't already a newline
+                                            if (result[result.length - 1] !== '\\n') {
+                                                result.push('\\n');
+                                            }
                                         }
+                                        
                                         // Recursively process children
                                         result = result.concat(extractTextAndEmojis(child, false));
-                                    } else {
-                                        // Inline element - recursively process WITHOUT newline
-                                        result = result.concat(extractTextAndEmojis(child, false));
+                                        
+                                        // Add newline after block element
+                                        if (isBlockLevel && !isRoot) {
+                                            // Only add if last item isn't already a newline
+                                            if (result.length > 0 && result[result.length - 1] !== '\\n') {
+                                                result.push('\\n');
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -879,17 +991,29 @@ async def get_last_message_text_in_open_chat(page, max_messages_to_check: int = 
                 # Apply deduplication to fix link card subtitle duplication bug
                 text_raw = text
                 text = dedupe_lines_preserving_order(text)
+                text_after_dedupe = text
                 
-                # Log raw vs deduped for comparison
+                # Apply link message normalization (fixes domain+title concatenation)
+                text = normalize_link_message(text)
+                
+                # Log raw vs deduped vs normalized for comparison
                 preview_raw = text_raw.replace("\n", " ")[:100]
-                preview_deduped = text.replace("\n", " ")[:100]
+                preview_deduped = text_after_dedupe.replace("\n", " ")[:100]
+                preview_normalized = text.replace("\n", " ")[:100]
                 
-                if text != text_raw:
-                    lines_removed = text_raw.count('\n') - text.count('\n')
+                # Log only if there were changes
+                if text_after_dedupe != text_raw:
+                    lines_removed = text_raw.count('\n') - text_after_dedupe.count('\n')
                     print(f"{log_prefix} [RAW] {preview_raw!r}")
                     print(f"{log_prefix} [DEDUPED] {preview_deduped!r} (removed {lines_removed} duplicate lines)")
-                else:
-                    print(f"{log_prefix} ✅ Last TEXT message found at index {idx}: {preview_deduped!r}")
+                
+                if text != text_after_dedupe:
+                    print(f"{log_prefix} [NORMALIZE] Before: {preview_deduped!r}")
+                    print(f"{log_prefix} [NORMALIZE] After: {preview_normalized!r}")
+                
+                if text == text_raw and text == text_after_dedupe:
+                    # No changes from either dedupe or normalize
+                    print(f"{log_prefix} ✅ Last TEXT message found at index {idx}: {preview_normalized!r}")
                 
                 return text
             
@@ -1011,6 +1135,8 @@ async def collect_last_n_messages(
                 if text:
                     # Apply deduplication
                     text = dedupe_lines_preserving_order(text)
+                    # Apply link normalization (fixes domain+title concatenation)
+                    text = normalize_link_message(text)
                     collected_messages.append(ScrapedMessage(text=text, index=idx))
                     print(f"{log_prefix} Collected message {len(collected_messages)}/{count} (idx={idx})")
             
@@ -1112,26 +1238,42 @@ async def send_message_to_open_chat(page, text: str):
             await page.keyboard.press("Shift+Enter")
             await asyncio.sleep(0.05)  # Small delay between lines
     
-    # Wait 4 seconds for link preview to load (increased from 2s)
-    print("[FORWARD] ⏳ Waiting 4s for link preview to load...")
-    await page.wait_for_timeout(4000)
+    # Wait for link preview to load (only for messages with URLs)
+    # Increased delay for better preview detection (especially Mercado Livre/Amazon)
+    import re
+    has_url = bool(re.search(r'https?://\S+', text))
     
-    # Try to detect if preview loaded - check multiple times
-    preview_found = False
-    for attempt in range(3):
-        try:
-            preview = page.locator('div._ahwq img[src^="data:image/jpeg;base64,"]').first
-            await preview.wait_for(state="visible", timeout=1000)
-            print(f"[FORWARD] ✅ Link preview detected on attempt {attempt + 1}")
-            preview_found = True
-            break
-        except PlaywrightTimeoutError:
-            if attempt < 2:
-                print(f"[FORWARD] ⚠️ Preview not found yet, waiting 1s more...")
-                await page.wait_for_timeout(1000)
-    
-    if not preview_found:
-        print("[FORWARD] ⚠️ Link preview not detected after 6s total, sending anyway")
+    if has_url:
+        print("[FORWARD] ⏳ Message contains URL, waiting for link preview...")
+        
+        # Progressive attempts: 3s, 6s, 9s (total ~9-10s)
+        preview_found = False
+        total_wait_time = 0
+        
+        for attempt, wait_time in enumerate([(3, 3), (3, 6), (3, 9)], 1):
+            delay, cumulative = wait_time
+            
+            # Wait before attempt
+            await page.wait_for_timeout(delay * 1000)
+            total_wait_time += delay
+            
+            # Try to detect preview
+            try:
+                # Primary selector: link preview with image
+                preview = page.locator('div._ahwq img[src^="data:image/jpeg;base64,"]').first
+                await preview.wait_for(state="visible", timeout=500)
+                print(f"[FORWARD] ✅ Link preview detected after {total_wait_time}.0s (attempt {attempt})")
+                preview_found = True
+                break
+            except PlaywrightTimeoutError:
+                if attempt < 3:
+                    print(f"[FORWARD] ⚠️ Preview not found yet (attempt {attempt}/{3}), waiting more...")
+        
+        if not preview_found:
+            print(f"[FORWARD] ⚠️ Link preview not detected after ~{total_wait_time}s, sending anyway")
+    else:
+        # No URL in message, just small delay
+        await page.wait_for_timeout(500)
     
     # Now send
     print("[FORWARD] ⏎ Pressing Enter to send...")
