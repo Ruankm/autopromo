@@ -116,10 +116,36 @@ def normalize_link_message(text: str) -> str:
     if len(lines) > 10:
         print(f"  ... ({len(lines)} total lines)")
     
+    # Step 0: Remove trailing timestamps from URLs (fixes preview)
+    # Example: "https://mercadolivre.com/sec/28ARteu15:14" -> "https://mercadolivre.com/sec/28ARteu"
+    cleaned_lines = []
+    url_pattern = r'https?://\S+'
+    
+    for line in lines:
+        if not line.strip():
+            cleaned_lines.append(line)
+            continue
+        
+        # Check if line contains URL
+        if re.search(url_pattern, line):
+            # Remove trailing timestamp pattern HH:MM at end of line
+            # Pattern: optional space + 1-2 digits + colon + 2 digits at end
+            original_line = line
+            line = re.sub(r'\s*\d{1,2}:\d{2}\s*$', '', line)
+            line = line.rstrip()
+            
+            if line != original_line:
+                # Extract just the URL part for logging
+                url_match = re.search(url_pattern, original_line)
+                if url_match:
+                    print(f"[NORMALIZE] Stripped trailing time from URL: {url_match.group(0)}")
+        
+        cleaned_lines.append(line)
+    
     # Step 1: Fix concatenated domain+title
     # Example: "mercadolivre.comPower Bank..." -> two lines
     fixed_lines = []
-    for line in lines:
+    for line in cleaned_lines:
         stripped = line.strip()
         if not stripped:
             fixed_lines.append('')
