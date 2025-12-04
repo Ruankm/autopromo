@@ -94,10 +94,10 @@ def dedupe_lines_preserving_order(text: str) -> str:
 
 def normalize_link_message(text: str) -> str:
     """
-    Post-process link messages (Mercado Livre, Amazon, etc.) to fix common issues:
-      - Separate domain+title when concatenated (e.g. "mercadolivre.comEsmerilhadeira...")
-      - Remove duplicate URLs
-      - Remove redundant domain-only lines
+    Aggressively normalize link messages (Mercado Livre, Amazon, etc.) to fix:
+      - Redundant domain-only lines when full URL exists
+      - Duplicate titles (with/without emoji)
+      - Duplicate URLs
     
     Args:
         text: Text after dedupe_lines_preserving_order
@@ -108,78 +108,179 @@ def normalize_link_message(text: str) -> str:
     import re
     
     lines = text.split('\n')
-    result = []
     
-    # Track URLs to deduplicate
-    seen_urls = set()
-    url_lines = {}  # url -> line (keep the richer one)
+    # Debug logging
+    print("[NORMALIZE] INPUT:")
+    for i, line in enumerate(lines[:10], 1):  # Show first 10 lines
+        print(f"  {i}. {line[:80]!r}")
+    if len(lines) > 10:
+        print(f"  ... ({len(lines)} total lines)")
     
+    # Step 1: Fix concatenated domain+title
+    # Example: "mercadolivre.comPower Bank..." -> two lines
+    fixed_lines = []
     for line in lines:
         stripped = line.strip()
+        if not stripped:
+            fixed_lines.append('')
+            continue
         
-        # Skip empty lines initially, will restore spacing later
+        # Pattern: domain.com[Title with Capital]
+        domain_title_pattern = r'^([\w.-]+\.(com|com\.br|net|org|to))([A-ZÀ-Ú][^\s].*)$'
+        match = re.match(domain_title_pattern, stripped)
+        
+        if match:
+            domain = match.group(1)
+            title = match.group(3)
+            fixed_lines.append(domain)
+            if title.strip():
+                fixed_lines.append(title)
+        else:
+            fixed_lines.append(line)
+    
+    # Step 2: Identify all URLs and domain-only lines
+    url_pattern = r'https?://\S+'
+    all_urls = []
+    domain_only_lines = set()
+    
+    for line in fixed_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        # Find URLs
+        urls = re.findall(url_pattern, stripped)
+        all_urls.extend(urls)
+        
+        # Identify domain-only lines (mercadolivre.com, amazon.com.br, amzn.to, etc.)
+        if re.match(r'^([\w.-]+\.(com|com\.br|net|org|to))$', stripped):
+            domain_only_lines.add(stripped)
+    
+    has_full_url = len(all_urls) > 0
+    
+    # Step 3: Remove redundant domains if we have full URLs
+    result = []
+    for line in fixed_lines:
+        stripped = line.strip()
+        
         if not stripped:
             result.append('')
             continue
         
-        # Pattern 1: Fix "domain.comTitle..." (no space between domain and title)
-        # Example: "mercadolivre.comEsmerilhadeira..." -> "mercadolivre.com\nEsmerilhadeira..."
-        domain_title_pattern = r'^([\w.-]+\.(com|com\.br|net|org))([A-ZÀ-Ú][^\s]*)(.*)$'
-        domain_match = re.match(domain_title_pattern, stripped)
+        # Skip domain-only lines if we have full URLs
+        if has_full_url and stripped in domain_only_lines:
+            continue  # Remove redundant domain
         
-        if domain_match:
-            domain = domain_match.group(1)
-            title_start = domain_match.group(3)
-            rest = domain_match.group(4)
-            
-            # Split into two lines: domain alone, then title
-            result.append(domain)
-            full_title = title_start + rest
-            if full_title.strip():
-                result.append(full_title)
+        result.append(line)
+    
+    # Step 4: Dedupe URLs (keep richer version)
+    seen_urls = {}  # url -> line
+    final_result = []
+    
+    for line in result:
+        stripped = line.strip()
+        
+        if not stripped:
+            final_result.append('')
             continue
         
-        # Pattern 2: Extract URLs from lines
-        url_pattern = r'https?://\S+'
-        urls_in_line = re.findall(url_pattern, stripped)
+        # Check if line contains URL
+        urls = re.findall(url_pattern, stripped)
         
-        if urls_in_line:
-            # Track which line has each URL
-            for url in urls_in_line:
-                if url in seen_urls:
-                    # Duplicate URL - decide which line to keep
-                    existing_line = url_lines.get(url, '')
-                    
-                    # Keep the line with more context (call-to-action, descriptive text)
-                    if len(stripped) > len(existing_line):
-                        # Replace with richer line
-                        url_lines[url] = stripped
-                    # Skip this line if less rich
-                    continue
-                else:
-                    seen_urls.add(url)
-                    url_lines[url] = stripped
-                    result.append(line)
-                    break
-        else:
-            # Pattern 3: Domain-only lines (e.g. "mercadolivre.com")
-            # Only add if it's not redundant with a URL or richer line
-            domain_only_pattern = r'^([\w.-]+\.(com|com\.br|net|org))$'
-            if re.match(domain_only_pattern, stripped):
-                # Check if we already have a richer version with this domain
-                has_richer = False
-                for existing_line in result:
-                    if stripped in existing_line and len(existing_line) > len(stripped):
-                        has_richer = True
-                        break
-                
-                if not has_richer:
-                    result.append(line)
+        if urls:
+            url = urls[0]  # Take first URL
+            
+            if url in seen_urls:
+                # Duplicate URL - keep richer line
+                existing = seen_urls[url]
+                if len(stripped) > len(existing):
+                    # Replace with richer version
+                    # Find and replace in final_result
+                    for i, existing_line in enumerate(final_result):
+                        if existing_line.strip() == existing:
+                            final_result[i] = line
+                            break
+                    seen_urls[url] = stripped
+                # Skip this line
+                continue
             else:
-                # Normal line, keep it
-                result.append(line)
+                seen_urls[url] = stripped
+                final_result.append(line)
+        else:
+            # No URL in this line
+            final_result.append(line)
     
-    return '\n'.join(result)
+    # Step 5: Dedupe similar titles (aggressive for product names)
+    # Normalize titles by removing emoji, punctuation, extra spaces
+    def normalize_title(text):
+        # Remove emojis (rough pattern)
+        text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002702-\U000027B0\U000024C2-\U0001F251]+', '', text)
+        # Remove punctuation and extra spaces
+        text = re.sub(r'[^\w\s]', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip().lower()
+    
+    def is_title_line(line):
+        """Check if line looks like a product title (not price, not CUPOM, not URL)"""
+        stripped = line.strip()
+        if not stripped:
+            return False
+        # Exclude lines with price markers, CUPOM, URL indicators
+        if any(marker in stripped for marker in ['R$', 'CUPOM', 'Acesse', 'https://', 'http://']):
+            return False
+        # Exclude lines starting with emoji or symbols only
+        if re.match(r'^[^\w]+', stripped):
+            return False
+        return True
+    
+    deduped_result = []
+    seen_titles = {}  # normalized_title -> original line
+    
+    for line in final_result:
+        stripped = line.strip()
+        
+        if not stripped:
+            deduped_result.append('')
+            continue
+        
+        if is_title_line(line):
+            normalized = normalize_title(stripped)
+            
+            if normalized in seen_titles:
+                # Duplicate title - keep the richer one (usually with emoji)
+                existing = seen_titles[normalized]
+                if len(stripped) > len(existing):
+                    # Replace existing with richer version
+                    for i, existing_line in enumerate(deduped_result):
+                        if existing_line.strip() == existing:
+                            deduped_result[i] = line
+                            break
+                    seen_titles[normalized] = stripped
+                # Skip this line
+                continue
+            else:
+                seen_titles[normalized] = stripped
+                deduped_result.append(line)
+        else:
+            # Not a title, keep as-is
+            deduped_result.append(line)
+    
+    output_text = '\n'.join(deduped_result)
+    
+    # Debug logging
+    output_lines = output_text.split('\n')
+    print("[NORMALIZE] OUTPUT:")
+    for i, line in enumerate(output_lines[:10], 1):
+        print(f"  {i}. {line[:80]!r}")
+    if len(output_lines) > 10:
+        print(f"  ... ({len(output_lines)} total lines)")
+    
+    # Summary
+    removed_count = len(lines) - len(output_lines)
+    if removed_count > 0:
+        print(f"[NORMALIZE] Removed {removed_count} redundant lines")
+    
+    return output_text
 
 
 def parse_args():
@@ -1238,42 +1339,20 @@ async def send_message_to_open_chat(page, text: str):
             await page.keyboard.press("Shift+Enter")
             await asyncio.sleep(0.05)  # Small delay between lines
     
-    # Wait for link preview to load (only for messages with URLs)
-    # Increased delay for better preview detection (especially Mercado Livre/Amazon)
+    # Wait for link preview to load (simplified, deterministic approach)
+    # No DOM detection - just wait a fixed amount of time for WhatsApp to render the card
     import re
     has_url = bool(re.search(r'https?://\S+', text))
     
     if has_url:
-        print("[FORWARD] ⏳ Message contains URL, waiting for link preview...")
-        
-        # Progressive attempts: 3s, 6s, 9s (total ~9-10s)
-        preview_found = False
-        total_wait_time = 0
-        
-        for attempt, wait_time in enumerate([(3, 3), (3, 6), (3, 9)], 1):
-            delay, cumulative = wait_time
-            
-            # Wait before attempt
-            await page.wait_for_timeout(delay * 1000)
-            total_wait_time += delay
-            
-            # Try to detect preview
-            try:
-                # Primary selector: link preview with image
-                preview = page.locator('div._ahwq img[src^="data:image/jpeg;base64,"]').first
-                await preview.wait_for(state="visible", timeout=500)
-                print(f"[FORWARD] ✅ Link preview detected after {total_wait_time}.0s (attempt {attempt})")
-                preview_found = True
-                break
-            except PlaywrightTimeoutError:
-                if attempt < 3:
-                    print(f"[FORWARD] ⚠️ Preview not found yet (attempt {attempt}/{3}), waiting more...")
-        
-        if not preview_found:
-            print(f"[FORWARD] ⚠️ Link preview not detected after ~{total_wait_time}s, sending anyway")
+        # Fixed 8-second wait for link preview to render
+        # This is more reliable than trying to detect preview in DOM
+        print("[FORWARD] ⏳ Message contains URL, waiting 8s for link preview to render...")
+        await page.wait_for_timeout(8000)
+        print("[FORWARD] ✅ Preview wait complete")
     else:
-        # No URL in message, just small delay
-        await page.wait_for_timeout(500)
+        # Quick delay for non-link messages
+        await page.wait_for_timeout(300)
     
     # Now send
     print("[FORWARD] ⏎ Pressing Enter to send...")
